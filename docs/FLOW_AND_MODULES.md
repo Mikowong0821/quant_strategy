@@ -62,6 +62,8 @@ flowchart TB
     subgraph out["输出"]
         BT --> PERF["analysis/performance.summarize<br/>年化收益/波动/夏普/回撤"]
         BT --> META["meta：调仓记录 rebalance_log<br/>每期 top_k 股票及权重"]
+        PERF --> EXP["live/cache_io<br/>performance_summary / run_config / rebalance_logs"]
+        META --> EXP
         BT --> NAVC["main 收集 nav_curves"]
         NAVC --> PLOT["analysis/plotting.plot_nav<br/>nav_compare.png"]
         IC --> ICFIG["plot_ic（persist 时）<br/>ic_compare / ic_timeseries_*"]
@@ -86,7 +88,8 @@ flowchart TB
 | 7 | `backtest/backtest_single` | 逐日更新净值；在 **再平衡日** 用因子选 Top-K，再按 **等权**、**夏普** 或 **风险平价** 调仓 | **模拟交易规则**；配权发生在 **已选股之后**，只决定 K 只里的资金比例 |
 | 8 | `analysis/performance.summarize` | 由净值序列算年化收益、波动、**事后夏普**、最大回撤 | **成绩单**：描述这条净值曲线，与 `maximize_sharpe`（配权目标）不是同一对象 |
 | 9 | `backtest.backtest_multi` | **`run_multi_backtest(fused=...)`** 对融合得分回测（内部 `run_single_backtest`） | 多因子组合策略的一条净值 |
-| 10 | `analysis/plotting.plot_nav` 等 | 净值 / IC / 权重图 | 可视化 |
+| 10 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` | 可复现、可对照、可审计 |
+| 11 | `analysis/plotting.plot_nav` 等 | 净值 / IC / 权重图 | 可视化 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -117,8 +120,18 @@ flowchart TB
 
 更细的函数契约见 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md)。
 
+## 5. 实验记录输出
+
+当 `Settings.persist_run_outputs=True` 时，主流程除行情 / 因子 / IC 缓存和 PNG 图外，还会写：
+
+| 路径 | 含义 |
+|------|------|
+| `output/cache/run_config.json` | 本次 `Settings` 配置快照（Path 转字符串，含写入时间） |
+| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown` |
+| `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank` |
+
 ---
 
-## 5. 文档与代码同步
+## 6. 文档与代码同步
 
 本仓库**无**自动生成文档或 CI 校验「文档 vs 实现」。**约定**：修改 `main.py`、`config.Settings` 或回测/IC 行为时，同步更新 **本文**、`ENGINEERING_OVERVIEW.md`、`README.md` 及 `INTERFACE_AND_CONTRACTS.md` 中相关段落，并在提交说明中注明。

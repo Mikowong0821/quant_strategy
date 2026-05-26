@@ -81,6 +81,7 @@
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel)` | `Settings`、行情与面板 | 写 `output/cache/` 下 `prices_long.csv` 等 |
+| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs` | `Settings`、绩效 dict、回测 meta | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong | `PanelLong`（Series 或单列表 DataFrame） |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
@@ -120,7 +121,7 @@
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `fusion_use_ic_weights` | `True`（默认）时融合用 `fuse_ic_weighted_zscore`；`False` 时用等权 `fuse_equal_weight_zscore` |
 | `fusion_ic_rolling_window` / `fusion_ic_min_periods` | IC 列权：对 `ic.shift(1)` 做 rolling 均值时的窗口与最少样本数 |
-| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV 等 |
+| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、调仓日志、图表等 |
 
 ### 6.2 Token 与路径
 

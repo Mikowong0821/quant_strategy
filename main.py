@@ -4,6 +4,7 @@
 2）IC 与可选落盘；
 3）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
 4）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
+5）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -24,7 +25,12 @@ from backtest.backtest_single import run_single_backtest
 from backtest.backtest_utils import long_to_wide, wide_to_long
 from config import Settings, get_settings
 from factors.panel_builder import DEFAULT_FACTOR_ORDER, build_four_factor_panel
-from live.cache_io import save_run_cache
+from live.cache_io import (
+    save_performance_summary,
+    save_rebalance_logs,
+    save_run_cache,
+    save_run_config,
+)
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
 from models.fusion import fuse_equal_weight_zscore, fuse_ic_weighted_zscore
 
@@ -178,6 +184,7 @@ def main() -> None:
 
     ic_by_name: dict[str, pd.Series] = {}
     backtest_meta_by_name: dict[str, dict] = {}
+    performance_by_name: dict[str, dict] = {}
     print(
         "\n========== IC（截面 Spearman：因子@t vs 前瞻 %d 日收盘收益）==========\n"
         % settings.ic_forward_days
@@ -268,6 +275,7 @@ def main() -> None:
             stats = summarize(nav, periods=settings.trading_days_per_year)
             nav_curves[fname] = nav
             backtest_meta_by_name[fname] = meta
+            performance_by_name[fname] = stats
             _print_backtest_block("【因子】%s" % fname, nav, meta, stats)
         except Exception as e:
             print("【因子】%s 跳过: %s\n" % (fname, e))
@@ -288,6 +296,7 @@ def main() -> None:
         stats_f = summarize(nav_f, periods=settings.trading_days_per_year)
         nav_curves["FUSED_ZSCORE"] = nav_f
         backtest_meta_by_name["FUSED_ZSCORE"] = meta_f
+        performance_by_name["FUSED_ZSCORE"] = stats_f
         _print_backtest_block(
             "【融合】FUSED_ZSCORE（参与列: %s；融合=%s）" % (list(sub.columns), fusion_mode),
             nav_f,
@@ -323,6 +332,16 @@ def main() -> None:
     if settings.persist_run_outputs and backtest_meta_by_name:
         outd = settings.output_dir
         outd.mkdir(parents=True, exist_ok=True)
+        try:
+            cfg_path = save_run_config(settings)
+            perf_path = save_performance_summary(settings, performance_by_name)
+            log_paths = save_rebalance_logs(settings, backtest_meta_by_name)
+            print("运行配置已保存:", cfg_path.resolve())
+            print("绩效汇总已保存:", perf_path.resolve())
+            if log_paths:
+                print("调仓日志已保存: %d 份 → 目录 %s" % (len(log_paths), (outd / "rebalance_logs").resolve()))
+        except Exception as e:
+            print("实验记录落盘失败（不影响主流程）:", e)
         try:
             n_w = 0
             for name, meta in backtest_meta_by_name.items():

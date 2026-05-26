@@ -33,6 +33,9 @@
 
 - `live/cache_io.save_run_cache`：在因子面板构建成功后，将 **`prices_long.csv`**、**`prices_wide_close.csv`**、**`factor_panel.csv`**、**`run_meta.txt`** 写入 **`output/cache/`**。
 - `analysis.ic.save_ic_series`：在 IC 计算完成且 `persist_run_outputs` 时写 **`ic_<因子名>.csv`**。
+- `live/cache_io.save_run_config`：写 **`output/cache/run_config.json`**，保存本次 `Settings` 配置快照。
+- `live/cache_io.save_performance_summary`：写 **`output/performance_summary.csv`**，汇总每条策略的年化收益、波动、夏普、最大回撤。
+- `live/cache_io.save_rebalance_logs`：写 **`output/rebalance_logs/<策略名>.csv`**，记录每次调仓的日期、标的、权重、配权方式与排序。
 - `config.Settings.persist_run_outputs`（默认 `True`）为关时跳过上述写入。
 
 **明确非 MVP（占位 / 后续）**：
@@ -46,10 +49,10 @@
 | 路径 | 职责 |
 |------|------|
 | `config.py` | `Settings`：`data_dir`、`output_dir`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
-| `main.py` | 入口：拉数 → `build_four_factor_panel` → 可选 `save_run_cache` → IC → 可选 `save_ic_series` 与 **IC/权重 PNG** → 四因子各 `run_single_backtest(..., factor_values=列)` → **`_build_fused_zscore_panel`（IC 列权或等权）** + `run_multi_backtest(fused=...)` → `plot_nav`。 |
+| `main.py` | 入口：拉数 → `build_four_factor_panel` → 可选 `save_run_cache` → IC → 可选 `save_ic_series` 与 **IC/权重 PNG** → 四因子各 `run_single_backtest(..., factor_values=列)` → **`_build_fused_zscore_panel`（IC 列权或等权）** + `run_multi_backtest(fused=...)` → 绩效汇总 / 调仓日志 / 配置快照落盘 → `plot_nav`。 |
 | `data/` | 原始/演示数据；存在 `prices_demo.csv` 时优先读本地。 |
 | `live/data_feed.py` | `fetch_daily_panel`、`fetch_fina_indicator_panel`、`load_prices_from_csv` 等。 |
-| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情与因子面板。 |
+| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情与因子面板；`save_run_config`、`save_performance_summary`、`save_rebalance_logs` → 实验运行记录。 |
 | `backtest/backtest_utils.py` | `to_returns`、`long_to_wide`、`wide_to_long`、`prices_to_wide_close`、`align_panel`。 |
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日 Top-K、**等权 / 夏普 / 风险平价**、撮合与净值；`meta` 含 `rebalance_log`、`portfolio_weighting`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |
@@ -104,7 +107,8 @@
 | 6 | 单因子回测 ×4 | `run_single_backtest(fname, factor_values=panel[fname], ...)` |
 | 7 | 融合回测 ×1 | **`_build_fused_zscore_panel`**（`fuse_ic_weighted_zscore` 或等权）→ `run_multi_backtest(fused=..., factor_name="FUSED_ZSCORE", ...)` |
 | 8 | 绩效与打印 | `summarize`；`_print_backtest_block` 打印 `rebalance_log`、绩效 |
-| 9 | 净值对比图 | `plot_nav` → `output/nav_compare.png` |
+| 9 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` |
+| 10 | 净值对比图 | `plot_nav` → `output/nav_compare.png` |
 
 **多因子关系**：四条回测为 **同一 `panel` 的不同列** 的独立策略；第五条为 **IC 列权或等权 z-score 融合得分** 经 `run_multi_backtest` 的独立策略。调仓日 **不会**把四列现场合成后再单跑一条（合成仅在融合分支预先完成）。
 
