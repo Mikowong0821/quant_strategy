@@ -91,6 +91,7 @@
 | `models.fusion` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_models(...)` | 多列因子 Panel；`fuse_ic` 另需各列日 IC `Series` | 单列综合得分 `PanelLong` |
 | `analysis.ic` | `daily_ic_spearman`、`summarize_ic`、`save_ic_series` | `PanelLong` 单列、价格宽表、`forward_days` / `Settings.ic_forward_days` | `ICSeries`、汇总 dict、可选 `output/cache/ic_*.csv` |
 | `analysis.performance` | `summarize(nav, risk_free=0.0, periods=252)` | `NavSeries` | `dict`：`ann_return`, `ann_vol`, `sharpe`, `max_drawdown`, … |
+| `analysis.benchmark` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame` | 价格宽表 / 策略净值 / 基准净值 | 股票池等权基准、超额收益指标、超额净值宽表 |
 | `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`rebalance_log_to_weights_frame` | 净值；日 IC（`Series` 或多列对比）；权重宽表或由 `rebalance_log` 转换 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
 | `live.signal_system` | `generate_signals(fused_score, rules, ...)` | `PanelLong` | `PanelLong` 取值 ∈ {-1, 0, 1} 或连续仓位 |
 | `live.paper_trading` | `run_paper_trading(symbols, ...)` | 标的列表 + config | 日志 / 成交记录 DataFrame（契约：列含 `date`, `symbol`, `side`, `qty`, `price`） |
@@ -121,7 +122,7 @@
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `fusion_use_ic_weights` | `True`（默认）时融合用 `fuse_ic_weighted_zscore`；`False` 时用等权 `fuse_equal_weight_zscore` |
 | `fusion_ic_rolling_window` / `fusion_ic_min_periods` | IC 列权：对 `ic.shift(1)` 做 rolling 均值时的窗口与最少样本数 |
-| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、调仓日志、图表等 |
+| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、调仓日志、净值/超额净值图表等 |
 
 ### 6.2 Token 与路径
 

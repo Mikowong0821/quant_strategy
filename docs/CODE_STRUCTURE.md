@@ -25,6 +25,7 @@ flowchart LR
   sig[live/signal_system]
   paper[live/paper_trading]
   perf[analysis/performance]
+  bench[analysis/benchmark]
   plot[analysis/plotting]
 
   data --> fac
@@ -32,6 +33,8 @@ flowchart LR
   fac --> bt
   opt --> bt
   bt --> perf
+  bt --> bench
+  bench --> perf
   bt --> plot
   fac --> opt
   opt --> sig
@@ -48,7 +51,7 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
-| `main.py` | **MVP 程序入口**：拉数 → 四因子面板 → 可选落盘 → IC → 可选 IC CSV 与图 → 四列单因子回测 → **IC 列权或等权**融合 → `run_multi_backtest` → 净值/IC/权重图。复杂逻辑在子包中实现。 |
+| `main.py` | **MVP 程序入口**：拉数 → 四因子面板 → 可选落盘 → IC → 可选 IC CSV 与图 → 四列单因子回测 → **IC 列权或等权**融合 → `run_multi_backtest` → 股票池等权基准与超额收益 → 净值/超额净值/IC/权重图。复杂逻辑在子包中实现。 |
 | `requirements.txt` | **Python 依赖**列表，供虚拟环境一键安装。 |
 | `README.md` | 快速开始、目录总览、文档索引。 |
 
@@ -108,6 +111,7 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `performance.py` | **绩效指标**：由净值序列计算年化收益、波动、夏普、最大回撤等；与回测输出直接对接，便于统一口径。 |
+| `benchmark.py` | **基准与超额收益**：构造股票池等权基准，计算超额收益、跟踪误差、信息比率，并生成超额净值宽表。 |
 | `plotting.py` | **图表**：`plot_nav`、`plot_ic`、`plot_weights`；`rebalance_log_to_weights_frame` 将 `meta["rebalance_log"]` 转为权重宽表。 |
 | `ic.py` | **截面 IC**：日频 Spearman（因子 vs 前瞻收益）、汇总统计与可选 CSV 落盘；**不参与**回测调仓。 |
 
@@ -147,7 +151,7 @@ flowchart LR
 4. `backtest/backtest_single.py` → 单策略闭环（含 Top-K 与等权 / 夏普 / 风险平价）。  
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
-7. `analysis/ic.py`、`analysis/performance.py` → IC 与绩效。  
+7. `analysis/ic.py`、`analysis/performance.py`、`analysis/benchmark.py` → IC、绩效、基准与超额收益。  
 8. `live/` → 数据接入；信号与模拟盘占位。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。

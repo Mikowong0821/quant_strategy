@@ -4,7 +4,8 @@
 2）IC 与可选落盘；
 3）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
 4）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
-5）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
+5）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
+6）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -12,6 +13,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from analysis.benchmark import (
+    equal_weight_benchmark_nav,
+    excess_nav_frame,
+    summarize_excess,
+)
 from analysis.ic import daily_ic_spearman, save_ic_series, summarize_ic
 from analysis.performance import summarize
 from analysis.plotting import (
@@ -306,6 +312,57 @@ def main() -> None:
     except Exception as e:
         print("【融合】跳过: %s\n" % e)
 
+    benchmark_nav: pd.Series | None = None
+    if nav_curves:
+        try:
+            nav_index = pd.DataFrame(nav_curves).index
+            benchmark_nav = equal_weight_benchmark_nav(
+                prices,
+                dates=nav_index,
+                price_col=settings.price_col,
+            )
+            if not benchmark_nav.empty:
+                benchmark_stats = summarize(
+                    benchmark_nav,
+                    periods=settings.trading_days_per_year,
+                )
+                performance_by_name[benchmark_nav.name] = benchmark_stats
+                for name, nav in nav_curves.items():
+                    performance_by_name[name].update(
+                        summarize_excess(
+                            nav,
+                            benchmark_nav,
+                            periods=settings.trading_days_per_year,
+                        )
+                    )
+                print("========== 三、基准与超额收益 ==========\n")
+                print("【基准】%s（股票池每日等权）" % benchmark_nav.name)
+                print(
+                    "  年化收益: %.4f  年化波动: %.4f  夏普: %.4f  最大回撤: %.4f"
+                    % (
+                        benchmark_stats["ann_return"],
+                        benchmark_stats["ann_vol"],
+                        benchmark_stats["sharpe"],
+                        benchmark_stats["max_drawdown"],
+                    )
+                )
+                for name in nav_curves:
+                    st = performance_by_name[name]
+                    print(
+                        "【超额】%s  excess_ann_return=%.4f  tracking_error=%.4f  IR=%.4f"
+                        % (
+                            name,
+                            st["excess_ann_return"],
+                            st["tracking_error"],
+                            st["information_ratio"],
+                        )
+                    )
+                print()
+            else:
+                print("【基准】跳过: 股票池等权基准为空\n")
+        except Exception as e:
+            print("【基准】跳过: %s\n" % e)
+
     if settings.persist_run_outputs and ic_by_name:
         outd = settings.output_dir
         outd.mkdir(parents=True, exist_ok=True)
@@ -368,15 +425,32 @@ def main() -> None:
         settings.output_dir.mkdir(parents=True, exist_ok=True)
         chart_path = settings.output_dir / "nav_compare.png"
         try:
+            plot_df = pd.DataFrame(nav_curves)
+            if benchmark_nav is not None and not benchmark_nav.empty:
+                plot_df[benchmark_nav.name] = benchmark_nav
             plot_nav(
-                pd.DataFrame(nav_curves),
-                title="单因子 vs 融合（归一化净值，起点≈1）",
+                plot_df,
+                title="单因子 / 融合 / 基准（归一化净值，起点≈1）",
                 save_path=chart_path,
                 normalize=True,
             )
             print("净值对比图已保存:", chart_path.resolve())
         except Exception as e:
             print("作图失败:", e)
+        if benchmark_nav is not None and not benchmark_nav.empty:
+            excess_chart_path = settings.output_dir / "excess_nav_compare.png"
+            try:
+                xnav = excess_nav_frame(nav_curves, benchmark_nav)
+                if not xnav.empty:
+                    plot_nav(
+                        xnav,
+                        title="相对股票池等权基准的超额净值（起点≈1）",
+                        save_path=excess_chart_path,
+                        normalize=True,
+                    )
+                    print("超额净值图已保存:", excess_chart_path.resolve())
+            except Exception as e:
+                print("超额净值作图失败:", e)
 
 
 if __name__ == "__main__":

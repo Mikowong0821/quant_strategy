@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
+本文描述从 `main.py` 入口到 **IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
 
 ---
 
@@ -61,11 +61,16 @@ flowchart TB
 
     subgraph out["输出"]
         BT --> PERF["analysis/performance.summarize<br/>年化收益/波动/夏普/回撤"]
+        WIDE --> BENCH["analysis/benchmark<br/>股票池等权基准"]
+        NAVC --> BENCH
+        BENCH --> EXCESS["超额收益 / 跟踪误差 / 信息比率"]
+        EXCESS --> PERF
         BT --> META["meta：调仓记录 rebalance_log<br/>每期 top_k 股票及权重"]
         PERF --> EXP["live/cache_io<br/>performance_summary / run_config / rebalance_logs"]
         META --> EXP
         BT --> NAVC["main 收集 nav_curves"]
         NAVC --> PLOT["analysis/plotting.plot_nav<br/>nav_compare.png"]
+        EXCESS --> XPLOT["plot_nav<br/>excess_nav_compare.png"]
         IC --> ICFIG["plot_ic（persist 时）<br/>ic_compare / ic_timeseries_*"]
         BT --> WFIG["plot_weights（persist 时）<br/>weights_*"]
     end
@@ -88,8 +93,9 @@ flowchart TB
 | 7 | `backtest/backtest_single` | 逐日更新净值；在 **再平衡日** 用因子选 Top-K，再按 **等权**、**夏普** 或 **风险平价** 调仓 | **模拟交易规则**；配权发生在 **已选股之后**，只决定 K 只里的资金比例 |
 | 8 | `analysis/performance.summarize` | 由净值序列算年化收益、波动、**事后夏普**、最大回撤 | **成绩单**：描述这条净值曲线，与 `maximize_sharpe`（配权目标）不是同一对象 |
 | 9 | `backtest.backtest_multi` | **`run_multi_backtest(fused=...)`** 对融合得分回测（内部 `run_single_backtest`） | 多因子组合策略的一条净值 |
-| 10 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` | 可复现、可对照、可审计 |
-| 11 | `analysis/plotting.plot_nav` 等 | 净值 / IC / 权重图 | 可视化 |
+| 10 | `analysis/benchmark` | 构造股票池等权基准，计算超额收益、跟踪误差、信息比率 | 判断策略收益来自 alpha，还是来自市场/股票池整体上涨 |
+| 11 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` | 可复现、可对照、可审计 |
+| 12 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重图 | 可视化 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -104,6 +110,7 @@ flowchart TB
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC**：在面板与价格就绪后即可算；除上述融合外，**不写入** Top-K 内股票层优化的 μ、Σ。  
 - **绩效里的「夏普比率」**：对 **已实现净值** 的年化收益/年化波动比；**不是**优化器在调仓时最大化的那个目标（尽管名字相近）。
+- **基准与超额收益**：当前基准为 **股票池每日等权**，不依赖外部指数数据。策略收益减基准收益得到主动收益；主动收益的年化波动是 **tracking_error**，主动收益年化均值除以 tracking_error 是 **information_ratio**。
 
 ---
 
@@ -127,8 +134,9 @@ flowchart TB
 | 路径 | 含义 |
 |------|------|
 | `output/cache/run_config.json` | 本次 `Settings` 配置快照（Path 转字符串，含写入时间） |
-| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown` |
+| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准的 `excess_ann_return`, `tracking_error`, `information_ratio` |
 | `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank` |
+| `output/excess_nav_compare.png` | 各策略相对股票池等权基准的超额净值图 |
 
 ---
 
