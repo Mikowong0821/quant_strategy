@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 output/
 data/*.csv
+
+# 原创内容稿：本地保留，不进入公开仓库
+docs/articles/
+docs/xiaohongshu/

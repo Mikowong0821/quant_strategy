@@ -18,12 +18,12 @@
 ## 文档
 
 - **项目介绍（MVP 工程）**：[docs/MVP_PROJECT_ARTICLE.md](docs/MVP_PROJECT_ARTICLE.md) — Quant Strategy 的定位、模块关系、默认全流程与主流程表、数据/因子/IC/融合/回测与后续扩展方向
-- **长文系列**：[docs/articles/01_从一个MVP量化工程开始.md](docs/articles/01_从一个MVP量化工程开始.md)、[docs/articles/02_入口与配置.md](docs/articles/02_入口与配置.md)、[docs/articles/03_数据与因子面板.md](docs/articles/03_数据与因子面板.md)、[docs/articles/04_IC与多因子融合.md](docs/articles/04_IC与多因子融合.md)、[docs/articles/05_回测与组合配权.md](docs/articles/05_回测与组合配权.md)、[docs/articles/06_绩效图表与复现.md](docs/articles/06_绩效图表与复现.md)、[docs/articles/07_量化研究主链路复盘.md](docs/articles/07_量化研究主链路复盘.md)、[docs/articles/08_实验运行记录升级.md](docs/articles/08_实验运行记录升级.md)、[docs/articles/09_基准与超额收益.md](docs/articles/09_基准与超额收益.md)、[docs/articles/10_换手率与交易成本.md](docs/articles/10_换手率与交易成本.md) — 按文章节奏讲解 MVP 工程、主入口 / 配置设计、数据与因子面板、IC 与融合、回测与配权、绩效图表与复现、主链路复盘、实验记录升级、基准超额分析和换手成本分析
-- **小红书分篇稿（按模块）**：[docs/xiaohongshu/README.md](docs/xiaohongshu/README.md) — 总览 + 入口/数据/因子/IC/融合/回测/配权/绩效/路线图等逐篇笔记
 - **主流程与各模块**：[docs/FLOW_AND_MODULES.md](docs/FLOW_AND_MODULES.md)（含 Mermaid 流程图）
 - **工程总览（技术细节）**：[docs/ENGINEERING_OVERVIEW.md](docs/ENGINEERING_OVERVIEW.md)
 - **接口与数据契约**：[docs/INTERFACE_AND_CONTRACTS.md](docs/INTERFACE_AND_CONTRACTS.md)
 - **代码结构**：[docs/CODE_STRUCTURE.md](docs/CODE_STRUCTURE.md)
+
+原创长文与小红书草稿默认只在本地保留，并通过 `.gitignore` 排除，避免随公开代码仓库发布。
 
 ## 环境
 
