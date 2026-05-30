@@ -284,11 +284,13 @@ IC 的作用，是帮助我们判断因子是否有一定预测能力。
 
 - 净值对比图 `nav_compare.png`
 - 超额净值对比图 `excess_nav_compare.png`
+- 换手率对比图 `turnover_compare.png`
 - IC 对比图
 - 单因子 IC 时间序列图
 - 持仓权重图
 - 绩效汇总表 `performance_summary.csv`
 - 调仓明细 `rebalance_logs/*.csv`
+- 换手明细 `turnover_logs/*.csv`
 - 运行配置快照 `cache/run_config.json`
 
 这些输出不是“装饰”，而是研究闭环的一部分。
@@ -299,7 +301,7 @@ IC 的作用，是帮助我们判断因子是否有一定预测能力。
 
 缓存与落盘在 `live/cache_io.py`。
 
-如果配置开启，系统会把行情、宽表收盘价、因子面板、运行元信息、IC 序列、运行配置快照等写入 `output/cache/`，并额外在 `output/` 下保存绩效汇总表、调仓日志、净值图和超额净值图。
+如果配置开启，系统会把行情、宽表收盘价、因子面板、运行元信息、IC 序列、运行配置快照等写入 `output/cache/`，并额外在 `output/` 下保存绩效汇总表、调仓日志、换手日志、净值图、超额净值图和换手图。
 
 这为后续复现和对照实验打基础。
 

@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
+本文描述从 `main.py` 入口到 **IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
 
 ---
 
@@ -66,11 +66,15 @@ flowchart TB
         BENCH --> EXCESS["超额收益 / 跟踪误差 / 信息比率"]
         EXCESS --> PERF
         BT --> META["meta：调仓记录 rebalance_log<br/>每期 top_k 股票及权重"]
+        META --> TO["analysis/turnover<br/>换手率 / 预估交易成本"]
+        TO --> PERF
         PERF --> EXP["live/cache_io<br/>performance_summary / run_config / rebalance_logs"]
         META --> EXP
+        TO --> EXP
         BT --> NAVC["main 收集 nav_curves"]
         NAVC --> PLOT["analysis/plotting.plot_nav<br/>nav_compare.png"]
         EXCESS --> XPLOT["plot_nav<br/>excess_nav_compare.png"]
+        TO --> TPLOT["plot_turnover<br/>turnover_compare.png"]
         IC --> ICFIG["plot_ic（persist 时）<br/>ic_compare / ic_timeseries_*"]
         BT --> WFIG["plot_weights（persist 时）<br/>weights_*"]
     end
@@ -94,8 +98,9 @@ flowchart TB
 | 8 | `analysis/performance.summarize` | 由净值序列算年化收益、波动、**事后夏普**、最大回撤 | **成绩单**：描述这条净值曲线，与 `maximize_sharpe`（配权目标）不是同一对象 |
 | 9 | `backtest.backtest_multi` | **`run_multi_backtest(fused=...)`** 对融合得分回测（内部 `run_single_backtest`） | 多因子组合策略的一条净值 |
 | 10 | `analysis/benchmark` | 构造股票池等权基准，计算超额收益、跟踪误差、信息比率 | 判断策略收益来自 alpha，还是来自市场/股票池整体上涨 |
-| 11 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv` | 可复现、可对照、可审计 |
-| 12 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重图 | 可视化 |
+| 11 | `analysis/turnover` | 由 `rebalance_log` 计算换手率、预估交易成本 | 判断收益是否依赖高频换仓，估算成本压力 |
+| 12 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv` | 可复现、可对照、可审计 |
+| 13 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手图 | 可视化 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -111,6 +116,7 @@ flowchart TB
 - **IC**：在面板与价格就绪后即可算；除上述融合外，**不写入** Top-K 内股票层优化的 μ、Σ。  
 - **绩效里的「夏普比率」**：对 **已实现净值** 的年化收益/年化波动比；**不是**优化器在调仓时最大化的那个目标（尽管名字相近）。
 - **基准与超额收益**：当前基准为 **股票池每日等权**，不依赖外部指数数据。策略收益减基准收益得到主动收益；主动收益的年化波动是 **tracking_error**，主动收益年化均值除以 tracking_error 是 **information_ratio**。
+- **换手率（turnover）**：当前定义为本期目标权重相对上期目标权重的绝对变化和，近似「成交金额 / 组合净值」。初次建仓通常约为 1.0；预估成本为 `turnover * commission_rate`。
 
 ---
 
@@ -134,9 +140,11 @@ flowchart TB
 | 路径 | 含义 |
 |------|------|
 | `output/cache/run_config.json` | 本次 `Settings` 配置快照（Path 转字符串，含写入时间） |
-| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准的 `excess_ann_return`, `tracking_error`, `information_ratio` |
+| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准和换手成本指标 |
 | `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank` |
 | `output/excess_nav_compare.png` | 各策略相对股票池等权基准的超额净值图 |
+| `output/turnover_logs/<strategy>.csv` | 各策略逐次调仓换手：`date`, `turnover`, `estimated_cost`, `n_positions`, `weighting` |
+| `output/turnover_compare.png` | 各策略逐期换手率对比图 |
 
 ---
 

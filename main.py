@@ -5,7 +5,8 @@
 3）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
 4）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
 5）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
-6）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
+6）由调仓日志估算换手率与交易成本。
+7）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -23,9 +24,11 @@ from analysis.performance import summarize
 from analysis.plotting import (
     plot_ic,
     plot_nav,
+    plot_turnover,
     plot_weights,
     rebalance_log_to_weights_frame,
 )
+from analysis.turnover import summarize_turnover, turnover_frame, turnover_wide
 from backtest.backtest_multi import run_multi_backtest
 from backtest.backtest_single import run_single_backtest
 from backtest.backtest_utils import long_to_wide, wide_to_long
@@ -36,6 +39,7 @@ from live.cache_io import (
     save_rebalance_logs,
     save_run_cache,
     save_run_config,
+    save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
 from models.fusion import fuse_equal_weight_zscore, fuse_ic_weighted_zscore
@@ -363,6 +367,28 @@ def main() -> None:
         except Exception as e:
             print("【基准】跳过: %s\n" % e)
 
+    turnover_by_name: dict[str, pd.DataFrame] = {}
+    if backtest_meta_by_name:
+        print("========== 四、换手率与交易成本 ==========\n")
+        for name, meta in backtest_meta_by_name.items():
+            log = meta.get("rebalance_log") or []
+            tf = turnover_frame(log, commission_rate=settings.commission_rate)
+            turnover_by_name[name] = tf
+            st = summarize_turnover(log, commission_rate=settings.commission_rate)
+            if name in performance_by_name:
+                performance_by_name[name].update(st)
+            print(
+                "【换手】%s  avg=%.4f  max=%.4f  total=%.4f  estimated_cost=%.6f"
+                % (
+                    name,
+                    st["avg_turnover"],
+                    st["max_turnover"],
+                    st["total_turnover"],
+                    st["estimated_total_cost"],
+                )
+            )
+        print()
+
     if settings.persist_run_outputs and ic_by_name:
         outd = settings.output_dir
         outd.mkdir(parents=True, exist_ok=True)
@@ -393,10 +419,13 @@ def main() -> None:
             cfg_path = save_run_config(settings)
             perf_path = save_performance_summary(settings, performance_by_name)
             log_paths = save_rebalance_logs(settings, backtest_meta_by_name)
+            turnover_paths = save_turnover_logs(settings, turnover_by_name)
             print("运行配置已保存:", cfg_path.resolve())
             print("绩效汇总已保存:", perf_path.resolve())
             if log_paths:
                 print("调仓日志已保存: %d 份 → 目录 %s" % (len(log_paths), (outd / "rebalance_logs").resolve()))
+            if turnover_paths:
+                print("换手日志已保存: %d 份 → 目录 %s" % (len(turnover_paths), (outd / "turnover_logs").resolve()))
         except Exception as e:
             print("实验记录落盘失败（不影响主流程）:", e)
         try:
@@ -420,6 +449,17 @@ def main() -> None:
                 print("权重堆叠图已保存: %d 张 → 目录 %s" % (n_w, outd.resolve()))
         except Exception as e:
             print("权重作图失败（不影响主流程）:", e)
+        try:
+            tw = turnover_wide(turnover_by_name)
+            if not tw.empty:
+                plot_turnover(
+                    tw,
+                    title="各策略逐期换手率",
+                    save_path=outd / "turnover_compare.png",
+                )
+                print("换手率对比图已保存:", (outd / "turnover_compare.png").resolve())
+        except Exception as e:
+            print("换手率作图失败（不影响主流程）:", e)
 
     if nav_curves:
         settings.output_dir.mkdir(parents=True, exist_ok=True)

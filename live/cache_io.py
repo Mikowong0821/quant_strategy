@@ -158,3 +158,19 @@ def save_rebalance_logs(
         df.to_csv(path, index=False)
         out[str(name)] = path
     return out
+
+
+def save_turnover_logs(
+    settings: Settings,
+    turnover_by_name: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将各策略逐期换手表写入 output/turnover_logs/<strategy>.csv。"""
+    base = settings.output_dir / "turnover_logs"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in turnover_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False, date_format="%Y-%m-%d")
+        out[str(name)] = path
+    return out

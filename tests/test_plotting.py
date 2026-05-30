@@ -9,6 +9,7 @@ import pandas as pd
 
 from analysis.plotting import (
     plot_ic,
+    plot_turnover,
     plot_weights,
     rebalance_log_to_weights_frame,
 )
@@ -53,9 +54,15 @@ class TestPlotSmoke(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td)
             plot_ic(ic, title="t", save_path=p / "ic.png", rolling_window=5)
+            plot_turnover(
+                pd.DataFrame({"A": [1.0, 0.4], "B": [0.8, 0.7]}, index=days[[10, 20]]),
+                title="turnover",
+                save_path=p / "turnover.png",
+            )
             plot_weights(w, title="w", save_path=p / "w_area.png", kind="area")
             plot_weights(w, title="w", save_path=p / "w_hm.png", kind="heatmap")
             self.assertTrue((p / "ic.png").is_file())
+            self.assertTrue((p / "turnover.png").is_file())
             self.assertTrue((p / "w_area.png").is_file())
             self.assertTrue((p / "w_hm.png").is_file())
 

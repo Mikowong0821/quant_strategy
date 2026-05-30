@@ -14,6 +14,7 @@ from live.cache_io import (
     save_performance_summary,
     save_rebalance_logs,
     save_run_config,
+    save_turnover_logs,
 )
 
 
@@ -73,6 +74,23 @@ class TestExperimentOutputs(unittest.TestCase):
             )
             self.assertEqual(list(log_df["symbol"]), ["AAA", "BBB"])
             self.assertEqual(list(log_df["rank"]), [1, 2])
+
+            turnover_paths = save_turnover_logs(
+                settings,
+                {
+                    "MOMENTUM": pd.DataFrame(
+                        {
+                            "date": [pd.Timestamp("2024-01-31")],
+                            "turnover": [1.0],
+                            "estimated_cost": [0.001],
+                        }
+                    )
+                },
+            )
+            turnover_path = turnover_paths["MOMENTUM"]
+            self.assertTrue(turnover_path.is_file())
+            turnover_df = pd.read_csv(turnover_path)
+            self.assertAlmostEqual(float(turnover_df.loc[0, "turnover"]), 1.0)
 
 
 if __name__ == "__main__":

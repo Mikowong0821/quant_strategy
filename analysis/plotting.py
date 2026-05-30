@@ -95,6 +95,44 @@ def plot_nav(
         plt.show()
 
 
+def plot_turnover(
+    turnover: pd.DataFrame,
+    *,
+    title: str = "换手率对比",
+    save_path: Optional[Path] = None,
+    figsize: tuple[float, float] = (11, 4.5),
+) -> None:
+    """
+    绘制多条策略的逐期换手率。
+
+    :param turnover: 行为调仓日、列为策略名、值为 turnover（成交金额 / 组合净值）。
+    """
+    plt = _pyplot_zh(save_path)
+
+    df = turnover.sort_index().astype(float)
+    if df.empty or df.shape[1] == 0:
+        raise ValueError("plot_turnover: turnover 为空或无列")
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for col in df.columns:
+        ax.plot(df.index, df[col].values, marker="o", markersize=3, linewidth=1.2, label=str(col))
+    ax.set_title(title)
+    ax.set_xlabel("调仓日")
+    ax.set_ylabel("换手率（成交金额 / 净值）")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", fontsize=8)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 def plot_ic(
     ic: IcInput,
     *,
