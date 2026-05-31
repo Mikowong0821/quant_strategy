@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.plotting import (
+    plot_factor_coverage,
     plot_ic,
     plot_turnover,
     plot_weights,
@@ -53,6 +54,11 @@ class TestPlotSmoke(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             p = Path(td)
+            plot_factor_coverage(
+                pd.DataFrame({"factor": ["A", "B"], "coverage": [0.8, 0.5]}),
+                title="coverage",
+                save_path=p / "coverage.png",
+            )
             plot_ic(ic, title="t", save_path=p / "ic.png", rolling_window=5)
             plot_turnover(
                 pd.DataFrame({"A": [1.0, 0.4], "B": [0.8, 0.7]}, index=days[[10, 20]]),
@@ -61,6 +67,7 @@ class TestPlotSmoke(unittest.TestCase):
             )
             plot_weights(w, title="w", save_path=p / "w_area.png", kind="area")
             plot_weights(w, title="w", save_path=p / "w_hm.png", kind="heatmap")
+            self.assertTrue((p / "coverage.png").is_file())
             self.assertTrue((p / "ic.png").is_file())
             self.assertTrue((p / "turnover.png").is_file())
             self.assertTrue((p / "w_area.png").is_file())

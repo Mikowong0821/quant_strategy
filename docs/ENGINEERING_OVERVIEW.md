@@ -7,7 +7,7 @@
 
 ## 1. 项目定位与当前成熟度
 
-**定位**：A 股日频、研究向的 **「数据 → 因子面板 → IC → 单因子/融合回测 → 基准与超额收益 → 换手与成本 → 绩效与净值图 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
+**定位**：A 股日频、研究向的 **「数据 → 因子面板 → 数据质量 → IC → 单因子/融合回测 → 基准与超额收益 → 换手与成本 → 绩效与净值图 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
 
 **MVP 定稿**：上述闭环 **已实现并可作为交付边界**；**不包含** 实盘信号生成、模拟盘撮合、券商接口、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
 
@@ -20,6 +20,7 @@
 - **IC**：`analysis.ic` 日截面 Spearman vs 前瞻收益；不参与调仓；可落盘 `output/cache/ic_*.csv`。
 - **多因子融合**：默认 **`fuse_ic_weighted_zscore`**（各因子日 IC 经 `shift(1)+rolling` 得非负列权，再对横截面 z-score 加权；失败或配置关闭时用 **`fuse_equal_weight_zscore`**）→ `run_multi_backtest(fused=...)` → 内部 `run_single_backtest`。另支持 `run_multi_backtest(factors, weights)` **线性加权** 合成得分（与上述融合不同，`main` 当前未用）。
 - **优化**：`models.optimizer.maximize_sharpe` / `risk_parity`；回测在 `portfolio_weighting` 为 `max_sharpe` 或 `risk_parity` 时于再平衡日调用对应函数。流程见 [FLOW_AND_MODULES.md](./FLOW_AND_MODULES.md)。
+- **数据质量**：`analysis.data_quality` 在因子面板构建后统计价格覆盖率、因子覆盖率、每日覆盖率与调仓日有效截面规模。
 - 绩效：`analysis.performance.summarize`（年化收益、波动、夏普、最大回撤等）。
 - **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 用当前股票池生成每日等权基准；`summarize_excess` 为每条策略补充 `excess_ann_return`、`tracking_error`、`information_ratio`。
 - **换手与成本**：`analysis.turnover` 由 `meta["rebalance_log"]` 计算逐期目标权重变化，补充 `avg_turnover`、`total_turnover`、`estimated_total_cost` 等指标。
@@ -31,10 +32,12 @@
 - `analysis/plotting.plot_weights` + `rebalance_log_to_weights_frame`：由 `meta["rebalance_log"]` 得到宽表后堆叠面积图（或热力图）；`persist_run_outputs` 时 `main` 写 `output/weights_<因子>.png`。
 - `main.py` 收集各因子、`FUSED_ZSCORE` 与 `BENCH_EQUAL_WEIGHT` 净值后保存 **`output/nav_compare.png`**；另保存 **`output/excess_nav_compare.png`** 比较各策略相对基准的超额净值。
 - `analysis/plotting.plot_turnover`：绘制各策略逐期换手率；`persist_run_outputs` 时 `main` 写 **`output/turnover_compare.png`**。
+- `analysis/plotting.plot_factor_coverage`：绘制因子有效覆盖率；`persist_run_outputs` 时 `main` 写 **`output/data_quality/factor_coverage.png`**。
 
 **数据落盘（缓存）**：
 
 - `live/cache_io.save_run_cache`：在因子面板构建成功后，将 **`prices_long.csv`**、**`prices_wide_close.csv`**、**`factor_panel.csv`**、**`run_meta.txt`** 写入 **`output/cache/`**。
+- `live/cache_io.save_data_quality_reports`：写 **`output/data_quality/*.csv`**，保存价格 / 因子 / 调仓日覆盖率报告。
 - `analysis.ic.save_ic_series`：在 IC 计算完成且 `persist_run_outputs` 时写 **`ic_<因子名>.csv`**。
 - `live/cache_io.save_run_config`：写 **`output/cache/run_config.json`**，保存本次 `Settings` 配置快照。
 - `live/cache_io.save_performance_summary`：写 **`output/performance_summary.csv`**，汇总每条策略的年化收益、波动、夏普、最大回撤，并包含相对基准、换手率与预估成本指标。
@@ -53,19 +56,20 @@
 | 路径 | 职责 |
 |------|------|
 | `config.py` | `Settings`：`data_dir`、`output_dir`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
-| `main.py` | 入口：拉数 → `build_four_factor_panel` → 可选 `save_run_cache` → IC → 可选 `save_ic_series` 与 **IC/权重 PNG** → 四因子各 `run_single_backtest(..., factor_values=列)` → **`_build_fused_zscore_panel`（IC 列权或等权）** + `run_multi_backtest(fused=...)` → 股票池等权基准与超额指标 → 换手与成本 → 绩效汇总 / 调仓日志 / 换手日志 / 配置快照落盘 → `plot_nav`。 |
+| `main.py` | 入口：拉数 → `build_four_factor_panel` → 数据质量报告 → 可选 `save_run_cache` → IC → 可选 `save_ic_series` 与 **IC/权重 PNG** → 四因子各 `run_single_backtest(..., factor_values=列)` → **`_build_fused_zscore_panel`（IC 列权或等权）** + `run_multi_backtest(fused=...)` → 股票池等权基准与超额指标 → 换手与成本 → 绩效汇总 / 调仓日志 / 换手日志 / 配置快照落盘 → `plot_nav`。 |
 | `data/` | 原始/演示数据；存在 `prices_demo.csv` 时优先读本地。 |
 | `live/data_feed.py` | `fetch_daily_panel`、`fetch_fina_indicator_panel`、`load_prices_from_csv` 等。 |
-| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情与因子面板；`save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs` → 实验运行记录。 |
+| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情与因子面板；`save_data_quality_reports`、`save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs` → 实验运行记录。 |
 | `backtest/backtest_utils.py` | `to_returns`、`long_to_wide`、`wide_to_long`、`prices_to_wide_close`、`align_panel`。 |
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日 Top-K、**等权 / 夏普 / 风险平价**、撮合与净值；`meta` 含 `rebalance_log`、`portfolio_weighting`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |
 | `analysis/ic.py` | `daily_ic_spearman`、`summarize_ic`、`save_ic_series`。 |
 | `factors/` | 各 `calc_*` + `FACTOR_REGISTRY` + `panel_builder`。 |
+| `analysis/data_quality.py` | `price_coverage`、`factor_coverage`、`factor_daily_coverage`、`rebalance_coverage`。 |
 | `analysis/performance.py` | `summarize(nav)`。 |
 | `analysis/benchmark.py` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame`。 |
 | `analysis/turnover.py` | `turnover_frame`、`summarize_turnover`、`turnover_wide`。 |
-| `analysis/plotting.py` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`rebalance_log_to_weights_frame`。 |
+| `analysis/plotting.py` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_factor_coverage`、`rebalance_log_to_weights_frame`。 |
 | `models/fusion.py` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_models`（仅部分 `method`）。 |
 | `models/optimizer.py` | `maximize_sharpe`、`risk_parity`；由 `backtest_single` 在对应 `portfolio_weighting` 时再平衡日调用。 |
 
@@ -108,15 +112,16 @@
 | 2b | 否则 Tushare | `fetch_daily_panel(main._DEFAULT_TS_SYMBOLS, ...)` → `long_to_wide` |
 | 2c | 失败则合成宽表 | `_demo_price_wide()`，`wide_to_long` → `long_df` |
 | 3 | 构建四因子面板 | `build_four_factor_panel(prices, long_df, settings)` → `panel` |
-| 4 | 可选落盘行情与面板 | `save_run_cache`（`persist_run_outputs`） |
-| 5 | IC：各因子列 + **与融合同构的** FUSED 得分 | `daily_ic_spearman`、`summarize_ic`；可选 `save_ic_series` |
-| 6 | 单因子回测 ×4 | `run_single_backtest(fname, factor_values=panel[fname], ...)` |
-| 7 | 融合回测 ×1 | **`_build_fused_zscore_panel`**（`fuse_ic_weighted_zscore` 或等权）→ `run_multi_backtest(fused=..., factor_name="FUSED_ZSCORE", ...)` |
-| 8 | 绩效与打印 | `summarize`；`_print_backtest_block` 打印 `rebalance_log`、绩效 |
-| 9 | 基准与超额收益 | `equal_weight_benchmark_nav`、`summarize_excess` |
-| 10 | 换手与成本 | `turnover_frame`、`summarize_turnover` |
-| 11 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv` |
-| 12 | 净值、超额净值与换手图 | `plot_nav` / `plot_turnover` → `output/nav_compare.png`、`output/excess_nav_compare.png`、`output/turnover_compare.png` |
+| 4 | 数据质量报告 | `price_coverage`、`factor_coverage`、`rebalance_coverage` |
+| 5 | 可选落盘行情与面板 | `save_run_cache`（`persist_run_outputs`） |
+| 6 | IC：各因子列 + **与融合同构的** FUSED 得分 | `daily_ic_spearman`、`summarize_ic`；可选 `save_ic_series` |
+| 7 | 单因子回测 ×4 | `run_single_backtest(fname, factor_values=panel[fname], ...)` |
+| 8 | 融合回测 ×1 | **`_build_fused_zscore_panel`**（`fuse_ic_weighted_zscore` 或等权）→ `run_multi_backtest(fused=..., factor_name="FUSED_ZSCORE", ...)` |
+| 9 | 绩效与打印 | `summarize`；`_print_backtest_block` 打印 `rebalance_log`、绩效 |
+| 10 | 基准与超额收益 | `equal_weight_benchmark_nav`、`summarize_excess` |
+| 11 | 换手与成本 | `turnover_frame`、`summarize_turnover` |
+| 12 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv` |
+| 13 | 净值、超额净值、覆盖率与换手图 | `plot_nav` / `plot_factor_coverage` / `plot_turnover` |
 
 **多因子关系**：四条回测为 **同一 `panel` 的不同列** 的独立策略；第五条为 **IC 列权或等权 z-score 融合得分** 经 `run_multi_backtest` 的独立策略。调仓日 **不会**把四列现场合成后再单跑一条（合成仅在融合分支预先完成）。
 

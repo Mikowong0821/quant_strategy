@@ -174,3 +174,19 @@ def save_turnover_logs(
         frame.to_csv(path, index=False, date_format="%Y-%m-%d")
         out[str(name)] = path
     return out
+
+
+def save_data_quality_reports(
+    settings: Settings,
+    reports: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将数据质量报告写入 output/data_quality/<name>.csv。"""
+    base = settings.output_dir / "data_quality"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in reports.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False, date_format="%Y-%m-%d")
+        out[str(name)] = path
+    return out

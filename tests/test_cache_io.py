@@ -11,6 +11,7 @@ import pandas as pd
 
 from config import get_settings
 from live.cache_io import (
+    save_data_quality_reports,
     save_performance_summary,
     save_rebalance_logs,
     save_run_config,
@@ -34,6 +35,16 @@ class TestExperimentOutputs(unittest.TestCase):
             self.assertEqual(cfg["output_dir"], str(settings.output_dir))
             self.assertEqual(cfg["data_dir"], str(settings.data_dir))
             self.assertIn("written_utc", cfg)
+
+            dq_paths = save_data_quality_reports(
+                settings,
+                {
+                    "factor_coverage": pd.DataFrame(
+                        {"factor": ["MOMENTUM"], "coverage": [0.9]}
+                    )
+                },
+            )
+            self.assertTrue(dq_paths["factor_coverage"].is_file())
 
             perf_path = save_performance_summary(
                 settings,

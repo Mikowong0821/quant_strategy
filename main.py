@@ -1,12 +1,13 @@
 """
 主入口（**MVP 主流程**）：
 1）先构建四因子原始面板（只算一次）；
-2）IC 与可选落盘；
-3）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
-4）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
-5）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
-6）由调仓日志估算换手率与交易成本。
-7）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
+2）数据质量与覆盖率报告；
+3）IC 与可选落盘；
+4）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
+5）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
+6）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
+7）由调仓日志估算换手率与交易成本。
+8）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -19,9 +20,16 @@ from analysis.benchmark import (
     excess_nav_frame,
     summarize_excess,
 )
+from analysis.data_quality import (
+    factor_coverage,
+    factor_daily_coverage,
+    price_coverage,
+    rebalance_coverage,
+)
 from analysis.ic import daily_ic_spearman, save_ic_series, summarize_ic
 from analysis.performance import summarize
 from analysis.plotting import (
+    plot_factor_coverage,
     plot_ic,
     plot_nav,
     plot_turnover,
@@ -39,6 +47,7 @@ from live.cache_io import (
     save_rebalance_logs,
     save_run_cache,
     save_run_config,
+    save_data_quality_reports,
     save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
@@ -96,6 +105,10 @@ def _demo_price_wide() -> pd.DataFrame:
     syms = ["600519.SH", "000001.SZ", "601318.SH", "600036.SH", "601166.SH"]
     px = 100.0 * np.cumprod(1.0 + rng.normal(0.0004, 0.015, size=(len(days), len(syms))), axis=0)
     return pd.DataFrame(px, index=days, columns=syms)
+
+
+def _resample_freq_alias(freq: str) -> str:
+    return {"M": "ME", "Q": "QE", "A": "YE", "Y": "YE"}.get(freq, freq)
 
 
 def _print_backtest_block(title: str, nav: pd.Series, meta: dict, stats: dict) -> None:
@@ -182,6 +195,37 @@ def main() -> None:
         % (panel.shape[0], panel.shape[1], list(panel.columns))
     )
 
+    data_quality_reports: dict[str, pd.DataFrame] = {}
+    try:
+        rf = _resample_freq_alias(settings.rebalance_freq)
+        rebalance_dates = prices.resample(rf).last().index.intersection(prices.index)
+        data_quality_reports = {
+            "price_coverage": price_coverage(prices),
+            "factor_coverage": factor_coverage(panel),
+            "factor_daily_coverage": factor_daily_coverage(panel),
+            "rebalance_coverage": rebalance_coverage(
+                panel,
+                prices,
+                rebalance_dates,
+                factors=DEFAULT_FACTOR_ORDER,
+            ),
+        }
+        fc = data_quality_reports["factor_coverage"]
+        print("\n========== 数据质量与覆盖率 ==========\n")
+        for rec in fc.to_dict("records"):
+            print(
+                "【覆盖】%s  valid=%d/%d  coverage=%.2f%%"
+                % (
+                    rec["factor"],
+                    rec["valid_cells"],
+                    rec["total_cells"],
+                    rec["coverage"] * 100.0,
+                )
+            )
+        print()
+    except Exception as e:
+        print("数据质量报告生成失败（不影响主流程）:", e)
+
     if settings.persist_run_outputs:
         try:
             paths = save_run_cache(settings, long_df, prices, panel)
@@ -191,6 +235,24 @@ def main() -> None:
             )
         except Exception as e:
             print("落盘失败（不影响回测）:", e)
+        if data_quality_reports:
+            try:
+                dq_paths = save_data_quality_reports(settings, data_quality_reports)
+                print(
+                    "数据质量报告已保存: %d 份 → 目录 %s"
+                    % (len(dq_paths), (settings.output_dir / "data_quality").resolve())
+                )
+                plot_factor_coverage(
+                    data_quality_reports["factor_coverage"],
+                    title="因子有效覆盖率",
+                    save_path=settings.output_dir / "data_quality" / "factor_coverage.png",
+                )
+                print(
+                    "因子覆盖率图已保存:",
+                    (settings.output_dir / "data_quality" / "factor_coverage.png").resolve(),
+                )
+            except Exception as e:
+                print("数据质量报告落盘失败（不影响主流程）:", e)
 
     ic_by_name: dict[str, pd.Series] = {}
     backtest_meta_by_name: dict[str, dict] = {}

@@ -81,7 +81,7 @@
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel)` | `Settings`、行情与面板 | 写 `output/cache/` 下 `prices_long.csv` 等 |
-| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs` | `Settings`、绩效 dict、回测 meta、换手表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv` |
+| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs`、`save_data_quality_reports` | `Settings`、绩效 dict、回测 meta、换手表、数据质量表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`data_quality/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong | `PanelLong`（Series 或单列表 DataFrame） |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
@@ -91,9 +91,10 @@
 | `models.fusion` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_models(...)` | 多列因子 Panel；`fuse_ic` 另需各列日 IC `Series` | 单列综合得分 `PanelLong` |
 | `analysis.ic` | `daily_ic_spearman`、`summarize_ic`、`save_ic_series` | `PanelLong` 单列、价格宽表、`forward_days` / `Settings.ic_forward_days` | `ICSeries`、汇总 dict、可选 `output/cache/ic_*.csv` |
 | `analysis.performance` | `summarize(nav, risk_free=0.0, periods=252)` | `NavSeries` | `dict`：`ann_return`, `ann_vol`, `sharpe`, `max_drawdown`, … |
+| `analysis.data_quality` | `price_coverage`、`factor_coverage`、`factor_daily_coverage`、`rebalance_coverage` | 价格宽表、因子面板、调仓日序列 | 价格/因子/调仓日覆盖率报告 |
 | `analysis.benchmark` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame` | 价格宽表 / 策略净值 / 基准净值 | 股票池等权基准、超额收益指标、超额净值宽表 |
 | `analysis.turnover` | `turnover_frame`、`summarize_turnover`、`turnover_wide` | `meta["rebalance_log"]`、手续费率 | 逐期换手表、换手/成本汇总、换手宽表 |
-| `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`rebalance_log_to_weights_frame` | 净值；日 IC；权重宽表；换手宽表 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
+| `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_factor_coverage`、`rebalance_log_to_weights_frame` | 净值；日 IC；权重宽表；换手宽表；覆盖率表 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
 | `live.signal_system` | `generate_signals(fused_score, rules, ...)` | `PanelLong` | `PanelLong` 取值 ∈ {-1, 0, 1} 或连续仓位 |
 | `live.paper_trading` | `run_paper_trading(symbols, ...)` | 标的列表 + config | 日志 / 成交记录 DataFrame（契约：列含 `date`, `symbol`, `side`, `qty`, `price`） |
 
@@ -123,7 +124,7 @@
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `fusion_use_ic_weights` | `True`（默认）时融合用 `fuse_ic_weighted_zscore`；`False` 时用等权 `fuse_equal_weight_zscore` |
 | `fusion_ic_rolling_window` / `fusion_ic_min_periods` | IC 列权：对 `ic.shift(1)` 做 rolling 均值时的窗口与最少样本数 |
-| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、调仓日志、换手日志、净值/超额净值/换手图表等 |
+| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、数据质量报告、调仓日志、换手日志、净值/超额净值/换手图表等 |
 
 ### 6.2 Token 与路径
 

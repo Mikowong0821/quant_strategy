@@ -133,6 +133,41 @@ def plot_turnover(
         plt.show()
 
 
+def plot_factor_coverage(
+    coverage: pd.DataFrame,
+    *,
+    title: str = "因子覆盖率",
+    save_path: Optional[Path] = None,
+    figsize: tuple[float, float] = (8, 4.5),
+) -> None:
+    """绘制每个因子的有效覆盖率柱状图。"""
+    plt = _pyplot_zh(save_path)
+
+    need = {"factor", "coverage"}
+    if coverage.empty or not need.issubset(set(coverage.columns)):
+        raise ValueError("plot_factor_coverage: coverage 需包含 factor 与 coverage 列")
+
+    df = coverage.sort_values("coverage", ascending=False)
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(df["factor"].astype(str), df["coverage"].astype(float).values, color="C0", alpha=0.85)
+    ax.set_title(title)
+    ax.set_xlabel("因子")
+    ax.set_ylabel("有效覆盖率")
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(True, axis="y", alpha=0.3)
+    for i, v in enumerate(df["coverage"].astype(float).values):
+        ax.text(i, min(1.0, v + 0.02), "%.1f%%" % (v * 100.0), ha="center", va="bottom", fontsize=8)
+    fig.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 def plot_ic(
     ic: IcInput,
     *,
