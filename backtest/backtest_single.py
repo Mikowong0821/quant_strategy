@@ -2,6 +2,7 @@
 单因子回测。契约：输入因子名或预计算 PanelLong，输出 NavSeries + 元信息。
 
 月末调仓、Top-K 多头、收盘价成交、单边手续费；持仓权重见 config.portfolio_weighting（equal / max_sharpe / risk_parity）。
+若 config.max_position_weight / max_rebalance_turnover 可行，会在目标权重生成后限制单票上限与单次换手。
 """
 from __future__ import annotations
 
@@ -174,6 +175,135 @@ def _rebalance_to_target_weights(
     return cash, shares
 
 
+def _apply_max_position_cap(
+    weights: List[float],
+    max_weight: float,
+) -> Tuple[List[float], bool]:
+    """
+    对权重施加单票上限，并把被裁掉的权重迭代分配给未触顶标的。
+
+    返回 (新权重, 是否发生裁剪)。当 max_weight 不可行（例如 2 只股票上限 40%，总和无法到 100%）
+    时返回归一后的原权重并标记未裁剪。
+    """
+    if not weights:
+        return [], False
+    arr = np.maximum(np.asarray(weights, dtype=float), 0.0)
+    total = float(arr.sum())
+    if total <= 1e-12:
+        arr = np.full(len(weights), 1.0 / len(weights), dtype=float)
+    else:
+        arr = arr / total
+
+    cap = float(max_weight)
+    if not np.isfinite(cap) or cap <= 0.0 or cap >= 1.0:
+        return arr.tolist(), False
+    if cap * len(arr) < 1.0 - 1e-12:
+        return arr.tolist(), False
+
+    capped = np.minimum(arr, cap)
+    changed = bool(np.any(arr > cap + 1e-12))
+    for _ in range(len(arr) + 2):
+        gap = 1.0 - float(capped.sum())
+        if gap <= 1e-12:
+            break
+        room = np.maximum(cap - capped, 0.0)
+        room_sum = float(room.sum())
+        if room_sum <= 1e-12:
+            break
+        add = np.minimum(room, gap * room / room_sum)
+        capped += add
+
+    s = float(capped.sum())
+    if s <= 1e-12:
+        return arr.tolist(), False
+    capped = capped / s
+    return capped.tolist(), changed or bool(np.any(capped > cap + 1e-9))
+
+
+def _cap_label(label: str) -> str:
+    if label.endswith("_capped"):
+        return label
+    return "%s_capped" % label
+
+
+def _target_weight_map(picks: List[str], weights: List[float]) -> Dict[str, float]:
+    if not picks or not weights:
+        return {}
+    arr = np.maximum(np.asarray(weights, dtype=float), 0.0)
+    total = float(arr.sum())
+    if total <= 1e-12:
+        return {}
+    out: Dict[str, float] = {}
+    for sym, w in zip(picks, arr / total):
+        if float(w) <= 1e-12:
+            continue
+        out[str(sym)] = out.get(str(sym), 0.0) + float(w)
+    return out
+
+
+def _target_weight_lists(
+    target: Dict[str, float],
+    preferred_order: List[str],
+) -> Tuple[List[str], List[float]]:
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for sym in preferred_order:
+        ss = str(sym)
+        if ss in seen or target.get(ss, 0.0) <= 1e-12:
+            continue
+        ordered.append(ss)
+        seen.add(ss)
+    for sym in sorted(target):
+        if sym in seen or target.get(sym, 0.0) <= 1e-12:
+            continue
+        ordered.append(sym)
+        seen.add(sym)
+    weights = [float(target[s]) for s in ordered]
+    return ordered, weights
+
+
+def _apply_rebalance_turnover_cap(
+    prev_target: Dict[str, float],
+    target: Dict[str, float],
+    max_turnover: float,
+) -> Tuple[Dict[str, float], bool, float, float]:
+    """
+    限制单次目标权重变化：target' = prev + scale * (target - prev)。
+
+    返回 (新目标权重, 是否节流, 原始目标换手, scale)。首次建仓不节流。
+    """
+    clean_target = {str(k): float(v) for k, v in target.items() if float(v) > 1e-12}
+    if not clean_target:
+        return {}, False, 0.0, 1.0
+
+    clean_prev = {str(k): float(v) for k, v in prev_target.items() if float(v) > 1e-12}
+    symbols = sorted(set(clean_prev) | set(clean_target))
+    turnover = float(
+        sum(abs(clean_target.get(sym, 0.0) - clean_prev.get(sym, 0.0)) for sym in symbols)
+    )
+
+    cap = float(max_turnover)
+    if not clean_prev or not np.isfinite(cap) or cap <= 0.0 or turnover <= cap + 1e-12:
+        return clean_target, False, turnover, 1.0
+
+    scale = max(0.0, min(1.0, cap / turnover))
+    capped: Dict[str, float] = {}
+    for sym in symbols:
+        w = clean_prev.get(sym, 0.0) + scale * (clean_target.get(sym, 0.0) - clean_prev.get(sym, 0.0))
+        if w > 1e-12:
+            capped[sym] = float(w)
+    total = float(sum(capped.values()))
+    if total > 1e-12:
+        capped = {k: v / total for k, v in capped.items()}
+    return capped, True, turnover, scale
+
+
+def _turnover_cap_label(label: str) -> str:
+    if label.endswith("_turnover_capped"):
+        return label
+    return "%s_turnover_capped" % label
+
+
 def _estimate_mu_cov_for_picks(
     prices_wide: pd.DataFrame,
     picks: List[str],
@@ -224,9 +354,11 @@ def _weights_for_rebalance(
     if n == 0:
         return [], "equal"
     eq = [1.0 / n] * n
+    max_pos = float(getattr(settings, "max_position_weight", 0.0) or 0.0)
     mode = str(getattr(settings, "portfolio_weighting", "equal") or "equal").strip().lower()
     if n < 2 or mode == "equal":
-        return eq, "equal"
+        w, capped = _apply_max_position_cap(eq, max_pos)
+        return w, _cap_label("equal") if capped else "equal"
 
     win = int(getattr(settings, "optimizer_return_window", 60))
     min_obs = int(getattr(settings, "optimizer_min_obs", 15))
@@ -247,7 +379,8 @@ def _weights_for_rebalance(
         w = (w / s).tolist()
         if len(w) != n:
             return eq, "max_sharpe_fallback"
-        return w, "max_sharpe"
+        w, capped = _apply_max_position_cap(w, max_pos)
+        return w, _cap_label("max_sharpe") if capped else "max_sharpe"
 
     if mode == "risk_parity":
         est = _estimate_mu_cov_for_picks(prices_wide, picks, dt, window=win, min_obs=min_obs)
@@ -265,9 +398,11 @@ def _weights_for_rebalance(
         w = (w / s).tolist()
         if len(w) != n:
             return eq, "risk_parity_fallback"
-        return w, "risk_parity"
+        w, capped = _apply_max_position_cap(w, max_pos)
+        return w, _cap_label("risk_parity") if capped else "risk_parity"
 
-    return eq, "equal"
+    w, capped = _apply_max_position_cap(eq, max_pos)
+    return w, _cap_label("equal") if capped else "equal"
 
 
 def run_single_backtest(
@@ -309,8 +444,16 @@ def run_single_backtest(
         if factor_name not in FACTOR_REGISTRY:
             raise KeyError(f"未知因子: {factor_name}，可注册于 factors.FACTOR_REGISTRY")
         fn = FACTOR_REGISTRY[factor_name]
-        if factor_name == "MOMENTUM":
-            lb = int(lookback if lookback is not None else settings.momentum_lookback)
+        if factor_name in ("MOMENTUM", "MOMENTUM_60D"):
+            default_lb = (
+                getattr(settings, "momentum_long_lookback", 60)
+                if factor_name == "MOMENTUM_60D"
+                else settings.momentum_lookback
+            )
+            lb = int(lookback if lookback is not None else default_lb)
+            factor_values = fn(prices_wide, lookback=lb)
+        elif factor_name == "REVERSAL_5D":
+            lb = int(lookback if lookback is not None else getattr(settings, "reversal_lookback", 5))
             factor_values = fn(prices_wide, lookback=lb)
         elif factor_name == "VOLATILITY":
             ret = to_returns(prices_wide)
@@ -320,6 +463,15 @@ def run_single_backtest(
                 window=vw,
                 annualize=True,
                 trading_days=settings.trading_days_per_year,
+            )
+        elif factor_name == "VOLUME_RATIO_20D":
+            long_px = kwargs.get("long_prices")
+            if long_px is None or "volume" not in getattr(long_px, "columns", []):
+                raise ValueError("VOLUME_RATIO_20D 需要 long_prices 且含 volume 列")
+            vol_wide = long_px.pivot(index="trade_date", columns="ts_code", values="volume")
+            factor_values = fn(
+                vol_wide,
+                window=int(kwargs.get("volume_ratio_window") or getattr(settings, "volume_ratio_window", 20)),
             )
         elif factor_name in ("PE", "ROE"):
             long_px = kwargs.get("long_prices")
@@ -356,6 +508,7 @@ def run_single_backtest(
     nav_records: List[Tuple[pd.Timestamp, float]] = []
     n_rebalances = 0
     rebalance_log: List[Dict[str, Any]] = []
+    prev_target_weights: Dict[str, float] = {}
 
     for dt in prices_wide.index:
         px = prices_wide.loc[dt]
@@ -385,25 +538,40 @@ def run_single_backtest(
         if not picks:
             continue
 
-        pick_weights, w_label = _weights_for_rebalance(prices_wide, picks, dt, settings)
-        use_target = len(picks) >= 2 and w_label in ("max_sharpe", "risk_parity")
-        if use_target:
-            cash, shares = _rebalance_to_target_weights(
-                cash, shares, px, picks, pick_weights, settings.commission_rate
-            )
-        else:
-            cash, shares = _rebalance_topk_equal_weight(
-                cash, shares, px, picks, settings.commission_rate
-            )
+        selected_picks = list(picks)
+        pick_weights, w_label = _weights_for_rebalance(prices_wide, selected_picks, dt, settings)
+        target_map = _target_weight_map(selected_picks, pick_weights)
+        target_map, turnover_capped, target_turnover, turnover_scale = _apply_rebalance_turnover_cap(
+            prev_target_weights,
+            target_map,
+            float(getattr(settings, "max_rebalance_turnover", 0.0) or 0.0),
+        )
+        if turnover_capped:
+            w_label = _turnover_cap_label(w_label)
+        target_picks, target_weights = _target_weight_lists(
+            target_map,
+            selected_picks + list(prev_target_weights.keys()),
+        )
+        if not target_picks:
+            continue
+
+        cash, shares = _rebalance_to_target_weights(
+            cash, shares, px, target_picks, target_weights, settings.commission_rate
+        )
 
         rebalance_log.append(
             {
                 "date": dt,
-                "picks": list(picks),
-                "weights": [float(x) for x in pick_weights],
+                "picks": list(target_picks),
+                "selected_picks": list(selected_picks),
+                "weights": [float(x) for x in target_weights],
                 "weighting": w_label,
+                "target_turnover": float(target_turnover),
+                "turnover_capped": bool(turnover_capped),
+                "turnover_scale": float(turnover_scale),
             }
         )
+        prev_target_weights = dict(zip(target_picks, [float(x) for x in target_weights]))
         n_rebalances += 1
 
     nav = pd.Series(
@@ -419,6 +587,8 @@ def run_single_backtest(
         "commission_rate": settings.commission_rate,
         "n_rebalances": n_rebalances,
         "portfolio_weighting": getattr(settings, "portfolio_weighting", "equal"),
+        "max_position_weight": getattr(settings, "max_position_weight", 0.0),
+        "max_rebalance_turnover": getattr(settings, "max_rebalance_turnover", 0.0),
         "rebalance_log": rebalance_log,
     }
     return nav, meta

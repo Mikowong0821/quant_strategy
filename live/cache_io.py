@@ -128,18 +128,40 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
         dt = rec.get("date")
         date_s = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)
         picks = list(rec.get("picks") or [])
+        selected = [str(x) for x in list(rec.get("selected_picks") or picks)]
+        selected_rank = {sym: i + 1 for i, sym in enumerate(selected)}
         weights = list(rec.get("weights") or [])
         for i, sym in enumerate(picks):
+            ss = str(sym)
             rows.append(
                 {
                     "date": date_s,
-                    "symbol": sym,
+                    "symbol": ss,
                     "weight": float(weights[i]) if i < len(weights) else float("nan"),
                     "weighting": rec.get("weighting", ""),
                     "rank": i + 1,
+                    "selected": ss in selected_rank,
+                    "selected_rank": selected_rank.get(ss, ""),
+                    "target_turnover": rec.get("target_turnover", ""),
+                    "turnover_capped": rec.get("turnover_capped", ""),
+                    "turnover_scale": rec.get("turnover_scale", ""),
                 }
             )
-    return pd.DataFrame(rows, columns=["date", "symbol", "weight", "weighting", "rank"])
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "date",
+            "symbol",
+            "weight",
+            "weighting",
+            "rank",
+            "selected",
+            "selected_rank",
+            "target_turnover",
+            "turnover_capped",
+            "turnover_scale",
+        ],
+    )
 
 
 def save_rebalance_logs(
@@ -174,6 +196,42 @@ def save_turnover_logs(
         frame.to_csv(path, index=False, date_format="%Y-%m-%d")
         out[str(name)] = path
     return out
+
+
+def save_risk_exposure_logs(
+    settings: Settings,
+    concentration_by_name: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将各策略逐期集中度表写入 output/risk_exposure/concentration_logs/<strategy>.csv。"""
+    base = settings.output_dir / "risk_exposure" / "concentration_logs"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in concentration_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False, date_format="%Y-%m-%d")
+        out[str(name)] = path
+    return out
+
+
+def save_risk_exposure_summary(
+    settings: Settings,
+    concentration_summary_by_name: Mapping[str, Mapping[str, Any]],
+) -> Path:
+    """将各策略集中度汇总写入 output/risk_exposure/concentration_summary.csv。"""
+    base = settings.output_dir / "risk_exposure"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "concentration_summary.csv"
+    rows: list[dict[str, Any]] = []
+    for name, stats in concentration_summary_by_name.items():
+        row: dict[str, Any] = {"strategy": name}
+        row.update({str(k): v for k, v in stats.items()})
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("strategy").reset_index(drop=True)
+    df.to_csv(path, index=False)
+    return path
 
 
 def save_data_quality_reports(

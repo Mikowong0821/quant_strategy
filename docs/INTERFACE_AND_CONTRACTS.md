@@ -81,11 +81,11 @@
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel)` | `Settings`、行情与面板 | 写 `output/cache/` 下 `prices_long.csv` 等 |
-| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs`、`save_data_quality_reports` | `Settings`、绩效 dict、回测 meta、换手表、数据质量表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`data_quality/*.csv` |
+| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports` | `Settings`、绩效 dict、回测 meta、换手表、集中度表、数据质量表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong | `PanelLong`（Series 或单列表 DataFrame） |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
-| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`） | `NavSeries` + `meta`（含 `rebalance_log`：每期 `date/picks/weights/weighting`、`portfolio_weighting` 等） |
+| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`）、`Settings.max_position_weight`、`Settings.max_rebalance_turnover` | `NavSeries` + `meta`（含 `rebalance_log`：每期 `date/picks/selected_picks/weights/weighting/target_turnover/turnover_capped/turnover_scale`、`portfolio_weighting`、`max_position_weight`、`max_rebalance_turnover` 等） |
 | `backtest.backtest_multi` | `run_multi_backtest(fused=..., prices=...)` 或 `run_multi_backtest(factors, weights=..., prices=...)` | 已融合得分 **或** 多列因子 + 线性权重 | `NavSeries` + `meta`（含 `multi_mode`：`pre_fused` / `linear_weight`） |
 | `models.optimizer` | `maximize_sharpe` / `risk_parity` | `mu`、`cov` 与标的顺序一致（`risk_parity` 仅需 `cov`） | 权重向量；`maximize_sharpe` / `risk_parity` 在对应 `portfolio_weighting` 时由回测于再平衡日调用 |
 | `models.fusion` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_models(...)` | 多列因子 Panel；`fuse_ic` 另需各列日 IC `Series` | 单列综合得分 `PanelLong` |
@@ -94,7 +94,8 @@
 | `analysis.data_quality` | `price_coverage`、`factor_coverage`、`factor_daily_coverage`、`rebalance_coverage` | 价格宽表、因子面板、调仓日序列 | 价格/因子/调仓日覆盖率报告 |
 | `analysis.benchmark` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame` | 价格宽表 / 策略净值 / 基准净值 | 股票池等权基准、超额收益指标、超额净值宽表 |
 | `analysis.turnover` | `turnover_frame`、`summarize_turnover`、`turnover_wide` | `meta["rebalance_log"]`、手续费率 | 逐期换手表、换手/成本汇总、换手宽表 |
-| `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_factor_coverage`、`rebalance_log_to_weights_frame` | 净值；日 IC；权重宽表；换手宽表；覆盖率表 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
+| `analysis.risk_exposure` | `concentration_frame`、`summarize_concentration`、`effective_n_wide` | `meta["rebalance_log"]` | 逐期集中度表、集中度汇总、effective_n 宽表 |
+| `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_effective_n`、`plot_factor_coverage`、`rebalance_log_to_weights_frame` | 净值；日 IC；权重宽表；换手宽表；effective_n 宽表；覆盖率表 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
 | `live.signal_system` | `generate_signals(fused_score, rules, ...)` | `PanelLong` | `PanelLong` 取值 ∈ {-1, 0, 1} 或连续仓位 |
 | `live.paper_trading` | `run_paper_trading(symbols, ...)` | 标的列表 + config | 日志 / 成交记录 DataFrame（契约：列含 `date`, `symbol`, `side`, `qty`, `price`） |
 
@@ -119,12 +120,15 @@
 | `rebalance_freq` | 再平衡频率，默认 `ME`（月末） |
 | `top_k` | 每期多头只数 |
 | `commission_rate` | 单边手续费率 |
+| `momentum_lookback` / `momentum_long_lookback` / `reversal_lookback` / `volume_ratio_window` / `vol_window` | 量价因子的默认窗口：短动量、长动量、短反转、成交量放大、低波 |
 | `portfolio_weighting` | `equal` / `max_sharpe` / `risk_parity`（Top-K 内等权、夏普最大化或风险平价 ERC；后两者样本不足时回退等权） |
+| `max_position_weight` | 单票目标权重上限；默认 `0.4`，目标权重超过上限时裁剪并重新分配，若因持仓数过少不可行则保留原归一权重 |
+| `max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，首次建仓不节流，`0` 表示关闭 |
 | `optimizer_return_window` / `optimizer_min_obs` | 夏普配权用历史收益窗口与最少样本数 |
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `fusion_use_ic_weights` | `True`（默认）时融合用 `fuse_ic_weighted_zscore`；`False` 时用等权 `fuse_equal_weight_zscore` |
 | `fusion_ic_rolling_window` / `fusion_ic_min_periods` | IC 列权：对 `ic.shift(1)` 做 rolling 均值时的窗口与最少样本数 |
-| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、数据质量报告、调仓日志、换手日志、净值/超额净值/换手图表等 |
+| `persist_run_outputs` | 是否写 `output/cache/` 下行情、面板、IC CSV、运行配置，以及 `output/` 下绩效汇总、数据质量报告、调仓日志、换手日志、集中度日志、净值/超额净值/换手/集中度图表等 |
 
 ### 6.2 Token 与路径
 

@@ -29,6 +29,9 @@ class Settings:
     backtest_end: str = "2025-01-01"
     top_k: int = 5
     momentum_lookback: int = 20
+    momentum_long_lookback: int = 60
+    reversal_lookback: int = 5
+    volume_ratio_window: int = 20
     vol_window: int = 20
     fina_history_years: int = 2
     persist_run_outputs: bool = True
@@ -40,6 +43,10 @@ class Settings:
     fusion_ic_min_periods: int = 20
     # 回测内持仓权重：equal=Top-K 等权；max_sharpe=历史收益估 mu/cov 后夏普最大化；risk_parity=同窗口估 cov 后 ERC（失败等权）
     portfolio_weighting: str = "max_sharpe"
+    # 单票目标权重上限；0 或 >=1 表示不启用。若 top_k 太小导致上限不可行，则回测保留可行的等权/原权重。
+    max_position_weight: float = 0.4
+    # 单次再平衡目标权重变化上限；0 表示不启用。首次建仓不节流，避免长期停留在现金状态。
+    max_rebalance_turnover: float = 1.0
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 

@@ -1,13 +1,14 @@
 """
 主入口（**MVP 主流程**）：
-1）先构建四因子原始面板（只算一次）；
+1）先构建多因子原始面板（只算一次）；
 2）数据质量与覆盖率报告；
 3）IC 与可选落盘；
 4）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
 5）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
 6）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
 7）由调仓日志估算换手率与交易成本。
-8）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
+8）由调仓日志计算 HHI / effective_n 等持仓集中度指标。
+9）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -29,12 +30,18 @@ from analysis.data_quality import (
 from analysis.ic import daily_ic_spearman, save_ic_series, summarize_ic
 from analysis.performance import summarize
 from analysis.plotting import (
+    plot_effective_n,
     plot_factor_coverage,
     plot_ic,
     plot_nav,
     plot_turnover,
     plot_weights,
     rebalance_log_to_weights_frame,
+)
+from analysis.risk_exposure import (
+    concentration_frame,
+    effective_n_wide,
+    summarize_concentration,
 )
 from analysis.turnover import summarize_turnover, turnover_frame, turnover_wide
 from backtest.backtest_multi import run_multi_backtest
@@ -45,6 +52,8 @@ from factors.panel_builder import DEFAULT_FACTOR_ORDER, build_four_factor_panel
 from live.cache_io import (
     save_performance_summary,
     save_rebalance_logs,
+    save_risk_exposure_logs,
+    save_risk_exposure_summary,
     save_run_cache,
     save_run_config,
     save_data_quality_reports,
@@ -122,6 +131,8 @@ def _print_backtest_block(title: str, nav: pd.Series, meta: dict, stats: dict) -
             meta.get("portfolio_weighting", "equal"),
         )
     )
+    print("  单票权重上限: %s" % meta.get("max_position_weight", ""))
+    print("  单次换手上限: %s" % meta.get("max_rebalance_turnover", ""))
     print("  调仓次数: %s" % meta.get("n_rebalances"))
     log = meta.get("rebalance_log") or []
     if log:
@@ -183,7 +194,7 @@ def main() -> None:
     if long_df is None:
         long_df = wide_to_long(prices, settings.price_col)
 
-    print("\n构建因子面板（四列原始因子，只计算一次）…")
+    print("\n构建因子面板（多列原始因子，只计算一次）…")
     try:
         panel = build_four_factor_panel(prices, long_df, settings)
     except Exception as e:
@@ -451,6 +462,30 @@ def main() -> None:
             )
         print()
 
+    concentration_by_name: dict[str, pd.DataFrame] = {}
+    concentration_summary_by_name: dict[str, dict] = {}
+    if backtest_meta_by_name:
+        print("========== 五、风险暴露与持仓集中度 ==========\n")
+        for name, meta in backtest_meta_by_name.items():
+            log = meta.get("rebalance_log") or []
+            cf = concentration_frame(log)
+            concentration_by_name[name] = cf
+            st = summarize_concentration(log)
+            concentration_summary_by_name[name] = st
+            if name in performance_by_name:
+                performance_by_name[name].update(st)
+            print(
+                "【集中度】%s  avg_effective_n=%.2f  min_effective_n=%.2f  avg_top1=%.2f%%  max_hhi=%.4f"
+                % (
+                    name,
+                    st["avg_effective_n"],
+                    st["min_effective_n"],
+                    st["avg_top1_weight"] * 100.0,
+                    st["max_hhi"],
+                )
+            )
+        print()
+
     if settings.persist_run_outputs and ic_by_name:
         outd = settings.output_dir
         outd.mkdir(parents=True, exist_ok=True)
@@ -482,12 +517,20 @@ def main() -> None:
             perf_path = save_performance_summary(settings, performance_by_name)
             log_paths = save_rebalance_logs(settings, backtest_meta_by_name)
             turnover_paths = save_turnover_logs(settings, turnover_by_name)
+            risk_paths = save_risk_exposure_logs(settings, concentration_by_name)
+            risk_summary_path = save_risk_exposure_summary(settings, concentration_summary_by_name)
             print("运行配置已保存:", cfg_path.resolve())
             print("绩效汇总已保存:", perf_path.resolve())
             if log_paths:
                 print("调仓日志已保存: %d 份 → 目录 %s" % (len(log_paths), (outd / "rebalance_logs").resolve()))
             if turnover_paths:
                 print("换手日志已保存: %d 份 → 目录 %s" % (len(turnover_paths), (outd / "turnover_logs").resolve()))
+            if risk_paths:
+                print(
+                    "集中度日志已保存: %d 份 → 目录 %s"
+                    % (len(risk_paths), (outd / "risk_exposure" / "concentration_logs").resolve())
+                )
+                print("集中度汇总已保存:", risk_summary_path.resolve())
         except Exception as e:
             print("实验记录落盘失败（不影响主流程）:", e)
         try:
@@ -522,6 +565,20 @@ def main() -> None:
                 print("换手率对比图已保存:", (outd / "turnover_compare.png").resolve())
         except Exception as e:
             print("换手率作图失败（不影响主流程）:", e)
+        try:
+            en = effective_n_wide(concentration_by_name)
+            if not en.empty:
+                plot_effective_n(
+                    en,
+                    title="各策略有效持仓数（1 / HHI）",
+                    save_path=outd / "risk_exposure" / "effective_n_compare.png",
+                )
+                print(
+                    "有效持仓数对比图已保存:",
+                    (outd / "risk_exposure" / "effective_n_compare.png").resolve(),
+                )
+        except Exception as e:
+            print("集中度作图失败（不影响主流程）:", e)
 
     if nav_curves:
         settings.output_dir.mkdir(parents=True, exist_ok=True)

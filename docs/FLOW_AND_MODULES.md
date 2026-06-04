@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
+本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
 
 ---
 
@@ -74,19 +74,23 @@ flowchart TB
         BT --> META["meta：调仓记录 rebalance_log<br/>每期 top_k 股票及权重"]
         META --> TO["analysis/turnover<br/>换手率 / 预估交易成本"]
         TO --> PERF
+        META --> RISK["analysis/risk_exposure<br/>HHI / effective_n / Top权重"]
+        RISK --> PERF
         PERF --> EXP["live/cache_io<br/>performance_summary / run_config / rebalance_logs"]
         META --> EXP
         TO --> EXP
+        RISK --> EXP
         BT --> NAVC["main 收集 nav_curves"]
         NAVC --> PLOT["analysis/plotting.plot_nav<br/>nav_compare.png"]
         EXCESS --> XPLOT["plot_nav<br/>excess_nav_compare.png"]
         TO --> TPLOT["plot_turnover<br/>turnover_compare.png"]
+        RISK --> RPLOT["plot_effective_n<br/>risk_exposure/effective_n_compare.png"]
         IC --> ICFIG["plot_ic（persist 时）<br/>ic_compare / ic_timeseries_*"]
         BT --> WFIG["plot_weights（persist 时）<br/>weights_*"]
     end
 ```
 
-夏普 / 风险平价在样本不足或外层异常时该期回退 **等权**（与下文第 3 节、`rebalance_log[].weighting` 一致）；`risk_parity` 优化器内部失败时回退逆波动率，仍记 `risk_parity`。**融合路径**：默认用 **滞后滚动 IC 均值** 对 z-score 后各因子列加权（见 `fuse_ic_weighted_zscore`）；IC **不**进入 Top-K 内 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
+夏普 / 风险平价在样本不足或外层异常时该期回退 **等权**（与下文第 3 节、`rebalance_log[].weighting` 一致）；`risk_parity` 优化器内部失败时回退逆波动率，仍记 `risk_parity`。若 `Settings.max_position_weight` 可行且触发裁剪，标签会追加 `_capped`；若 `Settings.max_rebalance_turnover` 触发调仓节流，标签会追加 `_turnover_capped`。**融合路径**：默认用 **滞后滚动 IC 均值** 对 z-score 后各因子列加权（见 `fuse_ic_weighted_zscore`）；IC **不**进入 Top-K 内 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
 
 ---
 
@@ -96,7 +100,7 @@ flowchart TB
 |------|------|--------|------|
 | 1 | `config.get_settings()` | 读路径、区间、`top_k`、费率、`portfolio_weighting`、IC 前瞻天数等 | 集中参数，避免魔法数 |
 | 2 | `live/data_feed` + `backtest_utils` | 得到 `long_df`、`prices` 宽表 | 统一行情形态，供因子与回测共用 |
-| 3 | `factors/panel_builder` | 计算 MOMENTUM / VOLATILITY / PE / ROE 等列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
+| 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE 等列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
 | 4 | `analysis/data_quality` | 统计价格覆盖、因子覆盖、调仓日有效截面 | 判断结果是否建立在足够样本上 |
 | 5 | `live/cache_io.save_run_cache`（可选） | 写 `output/cache/*.csv` | 复现与离线分析 |
 | 6 | `analysis/ic` | 每个交易日：因子 vs **前瞻**收益的截面 Spearman；汇总 mean_IC 等 | **因子评价**；并作为 **融合列权** 输入（滞后 rolling，见 `fuse_ic_weighted_zscore`） |
@@ -106,8 +110,9 @@ flowchart TB
 | 10 | `backtest.backtest_multi` | **`run_multi_backtest(fused=...)`** 对融合得分回测（内部 `run_single_backtest`） | 多因子组合策略的一条净值 |
 | 11 | `analysis/benchmark` | 构造股票池等权基准，计算超额收益、跟踪误差、信息比率 | 判断策略收益来自 alpha，还是来自市场/股票池整体上涨 |
 | 12 | `analysis/turnover` | 由 `rebalance_log` 计算换手率、预估交易成本 | 判断收益是否依赖高频换仓，估算成本压力 |
-| 13 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv` | 可复现、可对照、可审计 |
-| 14 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 覆盖率图 | 可视化 |
+| 13 | `analysis/risk_exposure` | 由 `rebalance_log` 计算 HHI、effective_n、Top 权重 | 判断持仓是否过度集中，补充组合风控视角 |
+| 14 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` | 可复现、可对照、可审计 |
+| 15 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -119,12 +124,15 @@ flowchart TB
 - **Top-K 选股**：在再平衡日，对因子值 **降序** 排列，在有效价、有效因子条件下取前 `k` 只；**每期名单可变**，记录在 `meta["rebalance_log"]`。  
 - **`portfolio_weighting=max_sharpe`**：在已得 `picks` 后，用 `prices` 上 **过去 `optimizer_return_window` 个交易日** 的日收益样本估计 **μ**、**Σ**；调用 `maximize_sharpe(μ, Σ)` 得权重；若样本不足等失败则 **回退等权**。  
 - **`portfolio_weighting=risk_parity`**：同一窗口估计 **Σ**（不需 μ），调用 `risk_parity(Σ)` 得 ERC 权重；样本不足或异常则 **回退等权**（`rebalance_log[].weighting` 为 `risk_parity_fallback`）。优化器内部失败时 `risk_parity` 会回退 **逆波动率** 权重，仍记为 `risk_parity`。  
+- **单票权重上限（`max_position_weight`）**：在目标权重生成后统一生效，默认 0.4；若某只股票超过上限，则裁剪到上限并把剩余权重分配给未触顶股票，标签如 `max_sharpe_capped` / `risk_parity_capped`。若上限因持仓数太少而不可行（例如 2 只股票上限 40%），则保留归一后的原权重。
+- **单次换手上限（`max_rebalance_turnover`）**：在单票上限之后、撮合之前生效，默认 1.0；首次建仓不节流，之后若新旧目标权重差异和超过上限，则按比例从旧目标向新目标移动，并在 `rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC**：在面板与价格就绪后即可算；除上述融合外，**不写入** Top-K 内股票层优化的 μ、Σ。  
 - **绩效里的「夏普比率」**：对 **已实现净值** 的年化收益/年化波动比；**不是**优化器在调仓时最大化的那个目标（尽管名字相近）。
 - **数据质量与覆盖率**：价格覆盖率看每只股票有多少有效交易日；因子覆盖率看每列因子在 `(date, symbol)` 网格上的非空比例；调仓日覆盖率看每期真实可用于排序和交易的截面规模。
 - **基准与超额收益**：当前基准为 **股票池每日等权**，不依赖外部指数数据。策略收益减基准收益得到主动收益；主动收益的年化波动是 **tracking_error**，主动收益年化均值除以 tracking_error 是 **information_ratio**。
 - **换手率（turnover）**：当前定义为本期目标权重相对上期目标权重的绝对变化和，近似「成交金额 / 组合净值」。初次建仓通常约为 1.0；预估成本为 `turnover * commission_rate`。
+- **HHI 与 effective_n**：HHI 是持仓权重平方和，越高代表越集中；`effective_n = 1 / HHI`，可理解为“等效持仓只数”。例如 5 只股票完全等权时 effective_n≈5，若资金主要压在 2 只股票上，effective_n 会明显降低。
 
 ---
 
@@ -133,6 +141,8 @@ flowchart TB
 | 字段 | 含义 |
 |------|------|
 | `Settings.portfolio_weighting` | `"equal"`：Top-K 等权；`"max_sharpe"`：夏普最大化；`"risk_parity"`：等风险贡献（ERC） |
+| `Settings.max_position_weight` | 单票目标权重上限；默认 `0.4`，`0` 或 `>=1` 可视为关闭 |
+| `Settings.max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，`0` 表示关闭 |
 | `Settings.optimizer_return_window` | 估计 μ、Σ（或仅 Σ）时使用的历史日收益窗口长度 |
 | `Settings.optimizer_min_obs` | 窗口内有效样本少于该数则不对该期做优化，回退等权 |
 | `Settings.ic_forward_days` | IC 用前瞻收益 horizon（默认 1 个交易日收盘对收盘） |
@@ -153,11 +163,14 @@ flowchart TB
 | `output/data_quality/rebalance_coverage.csv` | 调仓日价格 / 因子有效截面规模 |
 | `output/data_quality/factor_coverage.png` | 因子覆盖率柱状图 |
 | `output/cache/run_config.json` | 本次 `Settings` 配置快照（Path 转字符串，含写入时间） |
-| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准和换手成本指标 |
-| `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank` |
+| `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准、换手成本和集中度指标 |
+| `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank`，以及 `target_turnover`、`turnover_capped` 等 |
 | `output/excess_nav_compare.png` | 各策略相对股票池等权基准的超额净值图 |
 | `output/turnover_logs/<strategy>.csv` | 各策略逐次调仓换手：`date`, `turnover`, `estimated_cost`, `n_positions`, `weighting` |
 | `output/turnover_compare.png` | 各策略逐期换手率对比图 |
+| `output/risk_exposure/concentration_logs/<strategy>.csv` | 各策略逐次调仓集中度：`hhi`, `effective_n`, `top1_weight`, `top3_weight`, `n_positions` 等 |
+| `output/risk_exposure/concentration_summary.csv` | 各策略集中度汇总：平均/最小 effective_n、最大 HHI、Top 权重等 |
+| `output/risk_exposure/effective_n_compare.png` | 各策略 effective_n 对比图 |
 
 ---
 

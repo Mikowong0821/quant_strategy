@@ -7,7 +7,13 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from backtest.backtest_single import _weights_for_rebalance, run_single_backtest
+from backtest.backtest_single import (
+    _apply_max_position_cap,
+    _apply_rebalance_turnover_cap,
+    _target_weight_lists,
+    _weights_for_rebalance,
+    run_single_backtest,
+)
 from config import get_settings
 
 
@@ -20,6 +26,51 @@ def _price_wide_for_weights() -> pd.DataFrame:
 
 
 class TestWeightsForRebalance(unittest.TestCase):
+    def test_apply_max_position_cap(self) -> None:
+        w, capped = _apply_max_position_cap([0.8, 0.1, 0.1], 0.5)
+        self.assertTrue(capped)
+        self.assertAlmostEqual(sum(w), 1.0)
+        self.assertLessEqual(max(w), 0.5 + 1e-9)
+        self.assertAlmostEqual(w[0], 0.5)
+
+    def test_apply_max_position_cap_infeasible_keeps_normalized_weights(self) -> None:
+        w, capped = _apply_max_position_cap([0.5, 0.5], 0.4)
+        self.assertFalse(capped)
+        self.assertAlmostEqual(sum(w), 1.0)
+        self.assertEqual(w, [0.5, 0.5])
+
+    def test_apply_rebalance_turnover_cap(self) -> None:
+        prev = {"AAA": 0.5, "BBB": 0.5}
+        target = {"CCC": 0.5, "DDD": 0.5}
+        capped, did_cap, turnover, scale = _apply_rebalance_turnover_cap(prev, target, 1.0)
+        self.assertTrue(did_cap)
+        self.assertAlmostEqual(turnover, 2.0)
+        self.assertAlmostEqual(scale, 0.5)
+        self.assertAlmostEqual(sum(capped.values()), 1.0)
+        self.assertAlmostEqual(capped["AAA"], 0.25)
+        self.assertAlmostEqual(capped["BBB"], 0.25)
+        self.assertAlmostEqual(capped["CCC"], 0.25)
+        self.assertAlmostEqual(capped["DDD"], 0.25)
+
+    def test_apply_rebalance_turnover_cap_skips_initial_build(self) -> None:
+        capped, did_cap, turnover, scale = _apply_rebalance_turnover_cap(
+            {},
+            {"AAA": 0.5, "BBB": 0.5},
+            0.5,
+        )
+        self.assertFalse(did_cap)
+        self.assertAlmostEqual(turnover, 1.0)
+        self.assertAlmostEqual(scale, 1.0)
+        self.assertEqual(capped, {"AAA": 0.5, "BBB": 0.5})
+
+    def test_target_weight_lists_prefers_selected_then_previous(self) -> None:
+        picks, weights = _target_weight_lists(
+            {"OLD": 0.25, "NEW": 0.75},
+            ["NEW", "OLD"],
+        )
+        self.assertEqual(picks, ["NEW", "OLD"])
+        self.assertEqual(weights, [0.75, 0.25])
+
     def test_equal_mode(self) -> None:
         px = _price_wide_for_weights()
         s = get_settings()
@@ -81,7 +132,18 @@ class TestRunSingleRiskParity(unittest.TestCase):
         log = meta.get("rebalance_log") or []
         self.assertGreater(len(log), 0)
         labs = {rec.get("weighting") for rec in log}
-        self.assertTrue(labs <= {"risk_parity", "risk_parity_fallback", "equal"})
+        allowed = {
+            "risk_parity",
+            "risk_parity_capped",
+            "risk_parity_turnover_capped",
+            "risk_parity_capped_turnover_capped",
+            "risk_parity_fallback",
+            "risk_parity_fallback_turnover_capped",
+            "equal",
+            "equal_turnover_capped",
+        }
+        self.assertTrue(labs <= allowed)
+        self.assertIn("max_rebalance_turnover", meta)
 
 
 if __name__ == "__main__":

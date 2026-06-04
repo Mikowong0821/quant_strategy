@@ -1,6 +1,6 @@
 # Quant Strategy（MVP）
 
-模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 回测（Top-K + 等权 / 夏普 / 风险平价）→ 基准与超额收益 → 换手与成本 → 绩效与作图 → 实验记录落盘**。
+模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 回测（Top-K + 等权 / 夏普 / 风险平价）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与作图 → 实验记录落盘**。
 
 **文档与代码**：以 `main.py` 与 `config.Settings` 为准；更新行为后请同步修改 `docs/ENGINEERING_OVERVIEW.md`、`docs/FLOW_AND_MODULES.md` 及本 README 相关段落（仓库无自动文档校验）。
 
@@ -10,10 +10,10 @@
 
 | 在 MVP 内 | 不在 MVP 内（后续扩展） |
 |------------|-------------------------|
-| 行情接入（CSV / Tushare / 合成兜底）、四因子面板、数据质量 / 覆盖率报告、IC 与可选 CSV/图 | `live/signal_system.generate_signals`、`live/paper_trading.run_paper_trading`（仅占位） |
-| 月末再平衡、Top-K、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity` | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
+| 行情接入（CSV / Tushare / 合成兜底）、多因子面板（量价 + 财务）、数据质量 / 覆盖率报告、IC 与可选 CSV/图 | `live/signal_system.generate_signals`、`live/paper_trading.run_paper_trading`（仅占位） |
+| 月末再平衡、Top-K、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity`，`max_position_weight` 单票权重上限，`max_rebalance_turnover` 单次换手上限 | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
 | 单因子回测 + **IC 驱动或等权** z-score 融合回测、`meta["rebalance_log"]` | `main` 未接 `run_multi_backtest(factors, weights)` 线性加权入口（代码已有，非主流程） |
-| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、净值/IC/权重/换手/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/换手日志 CSV、`persist_run_outputs` 落盘 | 真实券商 API、实时风控与订单路由 |
+| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/换手/集中度日志 CSV、`persist_run_outputs` 落盘 | 真实券商 API、实时风控与订单路由 |
 
 ## 文档
 
@@ -39,11 +39,11 @@ Token：优先环境变量 `TUSHARE_TOKEN`；未设置时使用 `config.py` 内 
 
 ```
 data/           # 原始/演示数据（如 prices_demo.csv）
-output/         # 运行生成：nav_compare.png、excess_nav_compare.png、turnover_compare.png、performance_summary.csv、cache/、data_quality/ 等
+output/         # 运行生成：nav_compare.png、excess_nav_compare.png、turnover_compare.png、performance_summary.csv、cache/、data_quality/、risk_exposure/ 等
 factors/        # 因子与 panel_builder
 backtest/       # backtest_single、backtest_multi、utils
 models/         # fusion、optimizer
-analysis/       # performance、benchmark、turnover、data_quality、plotting、ic
+analysis/       # performance、benchmark、turnover、risk_exposure、data_quality、plotting、ic
 live/           # data_feed、cache_io（MVP 用）；signal/paper 非 MVP 占位
 config.py
 main.py
@@ -58,7 +58,7 @@ python main.py
 ### 当前 `main.py` 实际顺序（与代码一致）
 
 1. **数据**：`data/prices_demo.csv` 优先；否则 Tushare（`main._DEFAULT_TS_SYMBOLS`）；失败则合成宽表。得到 `prices`（宽表）与 `long_df`。
-2. **因子面板**：`factors.panel_builder.build_four_factor_panel`（四列：`MOMENTUM`、`VOLATILITY`、`PE`、`ROE`）。
+2. **因子面板**：`factors.panel_builder.build_four_factor_panel`（默认七列：`MOMENTUM`、`MOMENTUM_60D`、`REVERSAL_5D`、`VOLATILITY`、`VOLUME_RATIO_20D`、`PE`、`ROE`）。
 3. **数据质量**：`analysis.data_quality` 输出价格覆盖、因子覆盖、调仓日覆盖报告；若 `persist_run_outputs`，保存到 `output/data_quality/`。
 4. **落盘**：若 `persist_run_outputs`，`live.cache_io.save_run_cache` → `output/cache/`（`prices_long.csv`、`prices_wide_close.csv`、`factor_panel.csv`、`run_meta.txt`）。
 5. **IC**：`analysis.ic` 对各因子列及 **与融合同构的** FUSED 得分算日截面 Spearman；若 `persist_run_outputs`，另存 `ic_*.csv`。
@@ -66,14 +66,18 @@ python main.py
 7. **融合回测**：**IC 滞后滚动列权（默认）或等权** z-score → `run_multi_backtest(fused=..., factor_name="FUSED_ZSCORE")`（内部仍调 `run_single_backtest`）。
 8. **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 构造股票池等权基准；每条策略补 `benchmark_ann_return`、`excess_ann_return`、`tracking_error`、`information_ratio`。
 9. **换手与成本**：`analysis.turnover` 从 `meta["rebalance_log"]` 估算逐期 `turnover`、`estimated_cost`，并汇总 `avg_turnover`、`total_turnover`、`estimated_total_cost`。
-10. **实验记录与作图**：若 `persist_run_outputs`，保存 `output/cache/run_config.json`、`output/performance_summary.csv`、`output/rebalance_logs/*.csv`、`output/turnover_logs/*.csv`、`output/data_quality/*.csv`、`ic_compare.png`、`ic_timeseries_*.png`、`weights_*.png`、`turnover_compare.png`；`plot_nav` → `output/nav_compare.png`，超额净值 → `output/excess_nav_compare.png`。
+10. **风险暴露与集中度**：`analysis.risk_exposure` 从同一份调仓日志计算 `hhi`、`effective_n`、`top1_weight`、`top3_weight` 等，判断策略是否过度集中。
+11. **实验记录与作图**：若 `persist_run_outputs`，保存 `output/cache/run_config.json`、`output/performance_summary.csv`、`output/rebalance_logs/*.csv`、`output/turnover_logs/*.csv`、`output/risk_exposure/*.csv`、`output/data_quality/*.csv`、`ic_compare.png`、`ic_timeseries_*.png`、`weights_*.png`、`turnover_compare.png`、`risk_exposure/effective_n_compare.png`；`plot_nav` → `output/nav_compare.png`，超额净值 → `output/excess_nav_compare.png`。
 
 ### 回测与配置要点
 
 - **再平衡**：默认 `config.rebalance_freq = "ME"`（月末）；**Top-K** 默认 `top_k=5`；因子截面**降序**取前 K。
 - **持仓权重**：`config.portfolio_weighting`：`"equal"`、**`"max_sharpe"`（当前默认）** 或 **`"risk_parity"`**；后两者在再平衡日对 Top-K 用历史日收益估协方差（夏普另需 μ），分别调用 `models.optimizer.maximize_sharpe` / `risk_parity`，样本不足等失败则等权。
+- **单票权重上限**：`config.max_position_weight` 默认 `0.4`；当优化权重可行且超过上限时，会裁剪并重新分配剩余权重，`rebalance_log[].weighting` 记录为 `max_sharpe_capped` / `risk_parity_capped` 等。
+- **单次换手上限**：`config.max_rebalance_turnover` 默认 `1.0`；首次建仓不节流，之后若目标权重变化超过上限，会按比例向新目标移动，`rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **调仓记录**：`meta["rebalance_log"]`；`main` 会打印每期标的与权重，并在 `persist_run_outputs=True` 时保存到 `output/rebalance_logs/*.csv`。
 - **换手记录**：`analysis.turnover` 以调仓目标权重变化估算成交占比，并在 `persist_run_outputs=True` 时保存到 `output/turnover_logs/*.csv`。
+- **集中度记录**：`analysis.risk_exposure` 以 HHI 与 effective_n 衡量持仓是否集中，并在 `persist_run_outputs=True` 时保存到 `output/risk_exposure/`。
 
 ### 依赖
 
@@ -87,5 +91,5 @@ python main.py
 ### 测试
 
 ```bash
-python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality -v
+python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality tests.test_risk_exposure tests.test_factors -v
 ```

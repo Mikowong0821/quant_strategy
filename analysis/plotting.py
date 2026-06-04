@@ -133,6 +133,45 @@ def plot_turnover(
         plt.show()
 
 
+def plot_effective_n(
+    effective_n: pd.DataFrame,
+    *,
+    title: str = "有效持仓数对比",
+    save_path: Optional[Path] = None,
+    figsize: tuple[float, float] = (11, 4.5),
+) -> None:
+    """
+    绘制多条策略的逐期 effective_n（1 / HHI）。
+
+    effective_n 可理解为“等效持仓只数”：如果 5 只股票完全等权，effective_n≈5；
+    如果权重高度集中在少数股票上，effective_n 会明显低于实际持仓数。
+    """
+    plt = _pyplot_zh(save_path)
+
+    df = effective_n.sort_index().astype(float)
+    if df.empty or df.shape[1] == 0:
+        raise ValueError("plot_effective_n: effective_n 为空或无列")
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for col in df.columns:
+        ax.plot(df.index, df[col].values, marker="o", markersize=3, linewidth=1.2, label=str(col))
+    ax.set_title(title)
+    ax.set_xlabel("调仓日")
+    ax.set_ylabel("有效持仓数（1 / HHI）")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", fontsize=8)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 def plot_factor_coverage(
     coverage: pd.DataFrame,
     *,

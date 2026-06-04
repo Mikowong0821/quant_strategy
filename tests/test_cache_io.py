@@ -14,6 +14,8 @@ from live.cache_io import (
     save_data_quality_reports,
     save_performance_summary,
     save_rebalance_logs,
+    save_risk_exposure_logs,
+    save_risk_exposure_summary,
     save_run_config,
     save_turnover_logs,
 )
@@ -81,7 +83,18 @@ class TestExperimentOutputs(unittest.TestCase):
             log_df = pd.read_csv(log_path)
             self.assertEqual(
                 list(log_df.columns),
-                ["date", "symbol", "weight", "weighting", "rank"],
+                [
+                    "date",
+                    "symbol",
+                    "weight",
+                    "weighting",
+                    "rank",
+                    "selected",
+                    "selected_rank",
+                    "target_turnover",
+                    "turnover_capped",
+                    "turnover_scale",
+                ],
             )
             self.assertEqual(list(log_df["symbol"]), ["AAA", "BBB"])
             self.assertEqual(list(log_df["rank"]), [1, 2])
@@ -102,6 +115,32 @@ class TestExperimentOutputs(unittest.TestCase):
             self.assertTrue(turnover_path.is_file())
             turnover_df = pd.read_csv(turnover_path)
             self.assertAlmostEqual(float(turnover_df.loc[0, "turnover"]), 1.0)
+
+            risk_paths = save_risk_exposure_logs(
+                settings,
+                {
+                    "MOMENTUM": pd.DataFrame(
+                        {
+                            "date": [pd.Timestamp("2024-01-31")],
+                            "hhi": [0.52],
+                            "effective_n": [1.0 / 0.52],
+                            "top1_weight": [0.6],
+                        }
+                    )
+                },
+            )
+            risk_path = risk_paths["MOMENTUM"]
+            self.assertTrue(risk_path.is_file())
+            risk_df = pd.read_csv(risk_path)
+            self.assertAlmostEqual(float(risk_df.loc[0, "hhi"]), 0.52)
+
+            risk_summary_path = save_risk_exposure_summary(
+                settings,
+                {"MOMENTUM": {"avg_effective_n": 1.0 / 0.52, "max_hhi": 0.52}},
+            )
+            self.assertTrue(risk_summary_path.is_file())
+            risk_summary = pd.read_csv(risk_summary_path)
+            self.assertEqual(list(risk_summary["strategy"]), ["MOMENTUM"])
 
 
 if __name__ == "__main__":
