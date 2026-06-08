@@ -92,6 +92,146 @@ def summarize_ic(ic: pd.Series) -> Dict[str, Any]:
     }
 
 
+def ic_distribution_summary(ic_by_name: Dict[str, pd.Series]) -> pd.DataFrame:
+    """
+    汇总各因子的 IC 分布。
+
+    相比 `summarize_ic` 的均值视角，本函数补充分位数、正负占比和极端值，
+    用于判断 IC 是否由少数日期支撑，或是否长期正负摇摆。
+    """
+    rows: list[dict[str, Any]] = []
+    for name, ser in ic_by_name.items():
+        v = ser.dropna().astype(float)
+        base: dict[str, Any] = {"factor": str(name)}
+        if v.empty:
+            base.update(
+                {
+                    "n_days": 0,
+                    "mean_ic": np.nan,
+                    "std_ic": np.nan,
+                    "ic_ir": np.nan,
+                    "positive_rate": np.nan,
+                    "negative_rate": np.nan,
+                    "zero_rate": np.nan,
+                    "p05": np.nan,
+                    "p25": np.nan,
+                    "median": np.nan,
+                    "p75": np.nan,
+                    "p95": np.nan,
+                    "min_ic": np.nan,
+                    "max_ic": np.nan,
+                    "abs_mean_ic": np.nan,
+                }
+            )
+            rows.append(base)
+            continue
+        st = summarize_ic(v)
+        qs = v.quantile([0.05, 0.25, 0.50, 0.75, 0.95])
+        base.update(
+            {
+                "n_days": st["n_days"],
+                "mean_ic": st["mean_ic"],
+                "std_ic": st["std_ic"],
+                "ic_ir": st["ic_ir"],
+                "positive_rate": float((v > 0).mean()),
+                "negative_rate": float((v < 0).mean()),
+                "zero_rate": float((v == 0).mean()),
+                "p05": float(qs.loc[0.05]),
+                "p25": float(qs.loc[0.25]),
+                "median": float(qs.loc[0.50]),
+                "p75": float(qs.loc[0.75]),
+                "p95": float(qs.loc[0.95]),
+                "min_ic": float(v.min()),
+                "max_ic": float(v.max()),
+                "abs_mean_ic": float(v.abs().mean()),
+            }
+        )
+        rows.append(base)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values("factor").reset_index(drop=True)
+    return out
+
+
+def ic_rolling_stability(
+    ic_by_name: Dict[str, pd.Series],
+    *,
+    windows: tuple[int, ...] | list[int] = (20, 60),
+    min_periods: int | None = None,
+) -> pd.DataFrame:
+    """
+    汇总各因子的滚动 IC 稳定性。
+
+    对每个窗口输出 rolling mean 的均值、末值、正值占比，以及 rolling std 的均值。
+    这些字段用于观察因子近期是否衰减、是否长期保持同向。
+    """
+    rows: list[dict[str, Any]] = []
+    clean_windows = [int(w) for w in windows if int(w) > 0]
+    for name, ser in ic_by_name.items():
+        v = ser.dropna().astype(float).sort_index()
+        for win in clean_windows:
+            mp = int(min_periods) if min_periods is not None else max(2, min(win, max(len(v), 1)))
+            row: dict[str, Any] = {
+                "factor": str(name),
+                "window": win,
+                "min_periods": mp,
+                "n_days": int(len(v)),
+            }
+            if v.empty or len(v) < mp:
+                row.update(
+                    {
+                        "rolling_mean_last": np.nan,
+                        "rolling_mean_avg": np.nan,
+                        "rolling_mean_std": np.nan,
+                        "rolling_mean_positive_rate": np.nan,
+                        "rolling_std_avg": np.nan,
+                        "rolling_ir_last": np.nan,
+                    }
+                )
+                rows.append(row)
+                continue
+            rmean = v.rolling(win, min_periods=mp).mean().dropna()
+            rstd = v.rolling(win, min_periods=mp).std().dropna()
+            last_mean = float(rmean.iloc[-1]) if not rmean.empty else np.nan
+            last_std = float(rstd.iloc[-1]) if not rstd.empty else np.nan
+            row.update(
+                {
+                    "rolling_mean_last": last_mean,
+                    "rolling_mean_avg": float(rmean.mean()) if not rmean.empty else np.nan,
+                    "rolling_mean_std": float(rmean.std(ddof=1)) if len(rmean) > 1 else 0.0,
+                    "rolling_mean_positive_rate": float((rmean > 0).mean()) if not rmean.empty else np.nan,
+                    "rolling_std_avg": float(rstd.mean()) if not rstd.empty else np.nan,
+                    "rolling_ir_last": float(last_mean / last_std) if np.isfinite(last_std) and last_std > 0 else np.nan,
+                }
+            )
+            rows.append(row)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values(["factor", "window"]).reset_index(drop=True)
+    return out
+
+
+def save_ic_diagnostics(
+    settings: Settings,
+    distribution_summary: pd.DataFrame,
+    rolling_stability: pd.DataFrame,
+) -> Dict[str, Path]:
+    """将 IC 分布与滚动稳定性诊断写入 output/ic_diagnostics/。"""
+    base = settings.output_dir / "ic_diagnostics"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+
+    p_dist = base / "ic_distribution_summary.csv"
+    distribution_summary.to_csv(p_dist, index=False)
+    out["ic_distribution_summary"] = p_dist
+
+    p_roll = base / "ic_rolling_stability.csv"
+    rolling_stability.to_csv(p_roll, index=False)
+    out["ic_rolling_stability"] = p_roll
+
+    return out
+
+
 def save_ic_series(settings: Settings, ic_by_name: Dict[str, pd.Series]) -> Dict[str, Path]:
     """将各因子/融合的日 IC 写入 output/cache/ic_<name>.csv。"""
     base = settings.output_dir / "cache"

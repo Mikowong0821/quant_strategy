@@ -37,10 +37,22 @@ class Settings:
     persist_run_outputs: bool = True
     # IC：因子 @ 日 t 与前瞻收盘收益 close(t+h)/close(t)-1 的截面 Spearman；h=1 为最常见日频口径
     ic_forward_days: int = 1
+    # IC 稳定性诊断：对日 IC 做滚动均值/波动/正值占比统计的窗口。
+    ic_rolling_windows: tuple[int, ...] = (20, 60)
+    # 因子分组收益：按调仓日横截面分成 N 组，观察低分组到高分组的收益单调性。
+    factor_group_count: int = 5
     # 融合：True 时用各因子日 IC 的 shift(1)+rolling 均值做 z-score 后列权（见 models.fusion.fuse_ic_weighted_zscore）
     fusion_use_ic_weights: bool = True
     fusion_ic_rolling_window: int = 60
     fusion_ic_min_periods: int = 20
+    # 综合评分静态融合：用前半段样本计算 factor_score/fusion_weight，后半段验证 FUSED_SCORE_WEIGHTED。
+    factor_weight_train_ratio: float = 0.5
+    # 综合评分滚动融合：每个调仓日前只用历史窗口计算因子权重，再用于当期 FUSED_ROLLING_SCORE_WEIGHTED。
+    rolling_factor_weight_lookback_days: int = 120
+    rolling_factor_weight_min_days: int = 60
+    rolling_factor_weight_min_weight: float = 0.05
+    rolling_factor_weight_max_weight: float = 0.60
+    rolling_factor_weight_smoothing: float = 0.5
     # 回测内持仓权重：equal=Top-K 等权；max_sharpe=历史收益估 mu/cov 后夏普最大化；risk_parity=同窗口估 cov 后 ERC（失败等权）
     portfolio_weighting: str = "max_sharpe"
     # 单票目标权重上限；0 或 >=1 表示不启用。若 top_k 太小导致上限不可行，则回测保留可行的等权/原权重。

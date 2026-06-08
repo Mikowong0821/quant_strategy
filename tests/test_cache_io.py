@@ -16,6 +16,7 @@ from live.cache_io import (
     save_rebalance_logs,
     save_risk_exposure_logs,
     save_risk_exposure_summary,
+    save_run_cache,
     save_run_config,
     save_turnover_logs,
 )
@@ -37,6 +38,22 @@ class TestExperimentOutputs(unittest.TestCase):
             self.assertEqual(cfg["output_dir"], str(settings.output_dir))
             self.assertEqual(cfg["data_dir"], str(settings.data_dir))
             self.assertIn("written_utc", cfg)
+
+            days = pd.bdate_range("2024-01-01", periods=2)
+            long_df = pd.DataFrame(
+                {
+                    "trade_date": [days[0], days[1]],
+                    "ts_code": ["AAA", "AAA"],
+                    "close": [1.0, 1.1],
+                    "volume": [100.0, 120.0],
+                }
+            )
+            prices = pd.DataFrame({"AAA": [1.0, 1.1]}, index=days)
+            idx = pd.MultiIndex.from_product([days, ["AAA"]], names=["date", "symbol"])
+            panel = pd.DataFrame({"MOMENTUM": [0.0, 0.1]}, index=idx)
+            cache_paths = save_run_cache(settings, long_df, prices, panel, panel_zscore=panel)
+            self.assertTrue(cache_paths["factor_panel"].is_file())
+            self.assertTrue(cache_paths["factor_panel_zscore"].is_file())
 
             dq_paths = save_data_quality_reports(
                 settings,

@@ -26,6 +26,7 @@ flowchart LR
   paper[live/paper_trading]
   perf[analysis/performance]
   dq[analysis/data_quality]
+  diag[analysis/factor_diagnostics]
   bench[analysis/benchmark]
   turn[analysis/turnover]
   risk[analysis/risk_exposure]
@@ -35,6 +36,7 @@ flowchart LR
   feed --> data
   fac --> bt
   fac --> dq
+  fac --> diag
   opt --> bt
   bt --> perf
   bt --> bench
@@ -59,7 +61,7 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
-| `main.py` | **MVP 程序入口**：拉数 → 多因子面板 → 数据质量报告 → 可选落盘 → IC → 可选 IC CSV 与图 → 多列单因子回测 → **IC 列权或等权**融合 → `run_multi_backtest` → 股票池等权基准与超额收益 → 换手率与预估成本 → 风险暴露与集中度 → 净值/超额净值/IC/权重/换手/集中度/覆盖率图。复杂逻辑在子包中实现。 |
+| `main.py` | **MVP 程序入口**：拉数 → 多因子面板 → 数据质量报告 → 可选落盘 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 / 训练段权重 / 滚动权重日志 → 可选 IC CSV 与图 → 多列单因子回测 → **IC 列权或等权**融合 / **训练段静态综合权重**融合 / **调仓日前滚动综合权重**融合 → `run_multi_backtest` → 股票池等权基准与超额收益 → 换手率与预估成本 → 风险暴露与集中度 → 净值/超额净值/IC/权重/换手/集中度/覆盖率图。复杂逻辑在子包中实现。 |
 | `requirements.txt` | **Python 依赖**列表，供虚拟环境一键安装。 |
 | `README.md` | 快速开始、目录总览、文档索引。 |
 
@@ -87,6 +89,7 @@ flowchart LR
 | `factor_volatility.py` | **波动率因子**：基于收益宽表的滚动波动等，输出长表。 |
 | `factor_pe.py` | **市盈率类因子**：需要行情与财报字段对齐，输出长表。 |
 | `factor_roe.py` | **ROE 类因子**：依赖财务表与报告期/公告日规则，输出长表。 |
+| `preprocess.py` | **因子清洗与标准化**：按交易日横截面做 winsorize、z-score，供融合与缓存复用。 |
 
 **本层不负责**仓位、手续费、优化；只负责「在合法信息集下算出每个 `(date, symbol)` 上的因子值」。  
 新增因子时：新建模块实现 `calc_xxx`，并在 `FACTOR_REGISTRY` 注册名称。
@@ -110,7 +113,8 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `optimizer.py` | **组合优化**：`maximize_sharpe`、`risk_parity`（numpy）；**`backtest_single` 在 `portfolio_weighting` 为 `max_sharpe` 或 `risk_parity` 时再平衡日调用对应函数**。 |
-| `fusion.py` | **多因子融合**：`cross_sectional_zscore`、`fuse_equal_weight_zscore`、**`fuse_ic_weighted_zscore`（IC 滞后滚动列权）**；`fuse_models` 仅部分 `method`。 |
+| `fusion.py` | **多因子融合**：复用 `factors.preprocess.cross_sectional_zscore`，提供 `fuse_equal_weight_zscore`、**`fuse_ic_weighted_zscore`（IC 滞后滚动列权）**、**`fuse_static_weight_zscore`（训练段静态综合权重）**；`fuse_models` 仅部分 `method`。 |
+| `factor_weighting.py` | **因子权重建议**：把 IC 分布、rolling IC、Top-Bottom 与单调性等评价指标合成 `factor_score` / `fusion_weight`；全样本用于诊断，训练段用于 `FUSED_SCORE_WEIGHTED`，调仓日前滚动窗口用于 `FUSED_ROLLING_SCORE_WEIGHTED`。 |
 
 **本层**偏重「数学/优化问题」；日历、停牌、最小成交单位等**回测细节**仍建议在 `backtest` 或 `live` 处理。
 
@@ -123,10 +127,11 @@ flowchart LR
 | `data_quality.py` | **数据质量与覆盖率**：统计价格覆盖率、因子覆盖率、每日覆盖率、调仓日有效截面规模。 |
 | `performance.py` | **绩效指标**：由净值序列计算年化收益、波动、夏普、最大回撤等；与回测输出直接对接，便于统一口径。 |
 | `benchmark.py` | **基准与超额收益**：构造股票池等权基准，计算超额收益、跟踪误差、信息比率，并生成超额净值宽表。 |
+| `factor_diagnostics.py` | **因子诊断**：构造每个因子的 Top-K 等权多头腿，计算相对股票池等权基准的超额收益；同时计算分组收益、Top-Bottom 和单调性评分。 |
 | `turnover.py` | **换手率与成本**：从 `meta["rebalance_log"]` 计算逐期换手、预估成本和汇总指标。 |
 | `risk_exposure.py` | **风险暴露与集中度**：从 `meta["rebalance_log"]` 计算 HHI、effective_n、Top 权重、持仓数和汇总指标。 |
 | `plotting.py` | **图表**：`plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_effective_n`、`plot_factor_coverage`；`rebalance_log_to_weights_frame` 将 `meta["rebalance_log"]` 转为权重宽表。 |
-| `ic.py` | **截面 IC**：日频 Spearman（因子 vs 前瞻收益）、汇总统计与可选 CSV 落盘；**不参与**回测调仓。 |
+| `ic.py` | **截面 IC 与稳定性诊断**：日频 Spearman（因子 vs 前瞻收益）、基础汇总、分布分位数、正负占比、滚动稳定性与可选 CSV 落盘；**不参与**回测调仓。 |
 
 **本层**应尽量**无业务状态**：输入 Series/DataFrame，输出指标 dict 或保存图片，方便单元测试与脚本复用。
 
@@ -137,7 +142,7 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `data_feed.py` | **行情接入**：Tushare/AkShare 拉取或读本地 CSV，输出列名与契约对齐，供因子与回测使用。 |
-| `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、运行配置、绩效汇总、调仓日志、换手日志、集中度日志等，形成可复现实验档案。 |
+| `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、因子诊断、训练段权重、滚动权重日志、运行配置、绩效汇总、调仓日志、换手日志、集中度日志等，形成可复现实验档案。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **模拟盘**：按信号与行情更新虚拟账户、记录成交；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
 
@@ -164,7 +169,7 @@ flowchart LR
 4. `backtest/backtest_single.py` → 单策略闭环（含 Top-K 与等权 / 夏普 / 风险平价）。  
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
-7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC、数据质量、绩效、基准、超额收益、换手与成本、集中度。
+7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
 8. `live/` → 数据接入；信号与模拟盘占位。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。

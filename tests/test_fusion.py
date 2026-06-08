@@ -6,7 +6,11 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from models.fusion import fuse_equal_weight_zscore, fuse_ic_weighted_zscore
+from models.fusion import (
+    fuse_equal_weight_zscore,
+    fuse_ic_weighted_zscore,
+    fuse_static_weight_zscore,
+)
 
 
 def _tiny_panel_and_ic() -> tuple[pd.DataFrame, dict[str, pd.Series]]:
@@ -39,6 +43,22 @@ class TestFuseIcWeighted(unittest.TestCase):
         del ic_by["FAC_B"]
         with self.assertRaises(KeyError):
             fuse_ic_weighted_zscore(panel, ic_by, rolling_window=5, min_periods=2)
+
+
+class TestFuseStaticWeight(unittest.TestCase):
+    def test_static_weights_change_fusion(self) -> None:
+        panel, _ = _tiny_panel_and_ic()
+        s = fuse_static_weight_zscore(panel, {"FAC_A": 1.0, "FAC_B": 0.0})
+        s_eq = fuse_equal_weight_zscore(panel)
+        self.assertEqual(s.name, "fused_zscore_static_weighted")
+        self.assertEqual(len(s), len(s_eq))
+        self.assertFalse(np.allclose(s.values, s_eq.values, equal_nan=True))
+
+    def test_invalid_weights_fall_back_to_equal(self) -> None:
+        panel, _ = _tiny_panel_and_ic()
+        s = fuse_static_weight_zscore(panel, {"FAC_A": 0.0, "FAC_B": float("nan")})
+        s_eq = fuse_equal_weight_zscore(panel)
+        self.assertTrue(np.allclose(s.values, s_eq.values, equal_nan=True))
 
 
 if __name__ == "__main__":

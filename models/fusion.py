@@ -1,5 +1,6 @@
 """
-多因子融合：横截面 z-score 后等权平均，或 **按滞后滚动 IC 均值的非负归一化列权**（IC 驱动融合，最小切片）。
+多因子融合：横截面 z-score 后等权平均、按滞后滚动 IC 均值的非负归一化列权，
+或使用训练区间固定下来的综合评分权重做静态融合。
 
 输入为「多列因子」宽面板：行索引为 MultiIndex(date, symbol)，每列为原始因子值。
 """
@@ -10,32 +11,9 @@ from typing import Literal, Mapping
 import numpy as np
 import pandas as pd
 
+from factors.preprocess import cross_sectional_zscore
+
 FusionMethod = Literal["mean_zscore", "mean", "dynamic", "xgboost"]
-
-
-def cross_sectional_zscore(panel: pd.DataFrame) -> pd.DataFrame:
-    """
-    对每个交易日、每一列因子，在当日股票池上做横截面 z-score：(x - mean) / std。
-    当日 std 过小或无效时该列当日记 0；单点有效样本过少时该列当日记 0。
-    """
-    out = pd.DataFrame(index=panel.index, columns=panel.columns, dtype=float)
-    dates = panel.index.get_level_values(0).unique()
-    for dt in dates:
-        idx = panel.index.get_level_values(0) == dt
-        sub = panel.loc[idx].astype(float)
-        for col in sub.columns:
-            s = sub[col]
-            valid = s.dropna()
-            if len(valid) < 2:
-                out.loc[idx, col] = 0.0
-                continue
-            mu = float(valid.mean())
-            sig = float(valid.std(ddof=0))
-            if not np.isfinite(sig) or sig < 1e-12:
-                out.loc[idx, col] = 0.0
-            else:
-                out.loc[idx, col] = (s - mu) / sig
-    return out
 
 
 def fuse_equal_weight_zscore(panel: pd.DataFrame) -> pd.Series:
@@ -110,6 +88,43 @@ def fuse_ic_weighted_zscore(
     fused = pd.concat(pieces).sort_index()
     fused = fused.astype(float)
     fused.name = "fused_zscore_ic_weighted"
+    fused.index = fused.index.set_names(["date", "symbol"])
+    return fused
+
+
+def fuse_static_weight_zscore(
+    panel: pd.DataFrame,
+    weights_by_factor: Mapping[str, float],
+) -> pd.Series:
+    """
+    横截面 z-score 后，按一组已经确定的静态因子权重加权求和。
+
+    典型用法是：先在训练区间用 `models.factor_weighting` 得到 `fusion_weight`，
+    再把这组固定权重应用到验证区间，形成 `FUSED_SCORE_WEIGHTED`。这里不在函数
+    内部计算权重，避免把训练/验证切分逻辑藏进融合函数。
+
+    权重约束：只接受非负有限值；若权重缺失、全 0 或全无效，则回退为等权 z-score。
+    """
+    cols = list(panel.columns)
+    if not cols:
+        raise ValueError("panel 至少须有一列因子")
+
+    z = cross_sectional_zscore(panel)
+    raw = pd.Series(
+        [float(weights_by_factor.get(c, 0.0)) for c in cols],
+        index=cols,
+        dtype=float,
+    ).replace([np.inf, -np.inf], np.nan)
+    raw = raw.fillna(0.0).clip(lower=0.0)
+    total = float(raw.sum())
+    if not np.isfinite(total) or total <= 1e-18:
+        w = pd.Series(np.ones(len(cols), dtype=float) / len(cols), index=cols)
+    else:
+        w = raw / total
+
+    fused = z.mul(w, axis=1).sum(axis=1)
+    fused = fused.astype(float)
+    fused.name = "fused_zscore_static_weighted"
     fused.index = fused.index.set_names(["date", "symbol"])
     return fused
 

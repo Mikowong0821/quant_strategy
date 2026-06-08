@@ -23,12 +23,14 @@ def save_run_cache(
     long_df: pd.DataFrame,
     prices_wide: pd.DataFrame,
     panel: pd.DataFrame,
+    panel_zscore: pd.DataFrame | None = None,
 ) -> Dict[str, Path]:
     """
     写入：
     - prices_long.csv：日频 OHLCV 长表
     - prices_wide_close.csv：收盘价宽表（索引为日期）
-    - factor_panel.csv：因子面板（date, symbol 展开为列）
+    - factor_panel.csv：原始因子面板（date, symbol 展开为列）
+    - factor_panel_zscore.csv：可选，横截面标准化因子面板
     - run_meta.txt：区间与写入时间等元数据
     """
     base = cache_dir(settings)
@@ -47,6 +49,11 @@ def save_run_cache(
     panel_flat = panel.reset_index()
     panel_flat.to_csv(p_panel, index=False, date_format="%Y-%m-%d")
     out["factor_panel"] = p_panel
+
+    if panel_zscore is not None:
+        p_panel_z = base / "factor_panel_zscore.csv"
+        panel_zscore.reset_index().to_csv(p_panel_z, index=False, date_format="%Y-%m-%d")
+        out["factor_panel_zscore"] = p_panel_z
 
     meta = base / "run_meta.txt"
     meta.write_text(
@@ -247,4 +254,50 @@ def save_data_quality_reports(
         path = base / ("%s.csv" % safe)
         frame.to_csv(path, index=False, date_format="%Y-%m-%d")
         out[str(name)] = path
+    return out
+
+
+def save_factor_diagnostics(
+    settings: Settings,
+    long_excess_summary: pd.DataFrame,
+    group_return_detail: pd.DataFrame | None = None,
+    group_return_summary: pd.DataFrame | None = None,
+    factor_weight_summary: pd.DataFrame | None = None,
+    factor_weight_train_summary: pd.DataFrame | None = None,
+    rolling_factor_weight_log: pd.DataFrame | None = None,
+) -> Dict[str, Path]:
+    """保存因子诊断表：Top-K 多头超额、分组收益、综合评分、训练段权重与滚动权重日志。"""
+    base = settings.output_dir / "factor_diagnostics"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+
+    path = base / "long_excess_summary.csv"
+    long_excess_summary.to_csv(path, index=False)
+    out["long_excess_summary"] = path
+
+    if group_return_detail is not None:
+        detail_path = base / "group_return_detail.csv"
+        group_return_detail.to_csv(detail_path, index=False, date_format="%Y-%m-%d")
+        out["group_return_detail"] = detail_path
+
+    if group_return_summary is not None:
+        summary_path = base / "group_return_summary.csv"
+        group_return_summary.to_csv(summary_path, index=False)
+        out["group_return_summary"] = summary_path
+
+    if factor_weight_summary is not None:
+        weight_path = base / "factor_weight_summary.csv"
+        factor_weight_summary.to_csv(weight_path, index=False)
+        out["factor_weight_summary"] = weight_path
+
+    if factor_weight_train_summary is not None:
+        train_weight_path = base / "factor_weight_train_summary.csv"
+        factor_weight_train_summary.to_csv(train_weight_path, index=False)
+        out["factor_weight_train_summary"] = train_weight_path
+
+    if rolling_factor_weight_log is not None:
+        rolling_path = base / "rolling_factor_weight_log.csv"
+        rolling_factor_weight_log.to_csv(rolling_path, index=False, date_format="%Y-%m-%d")
+        out["rolling_factor_weight_log"] = rolling_path
+
     return out

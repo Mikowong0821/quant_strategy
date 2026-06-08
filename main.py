@@ -4,7 +4,7 @@
 2）数据质量与覆盖率报告；
 3）IC 与可选落盘；
 4）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
-5）多因子融合：默认用 **IC 滞后滚动均值** 驱动 z-score 列权（`fusion_use_ic_weights` 可关回等权），再跑 FUSED 回测。
+5）多因子融合：IC 滞后滚动列权、训练段静态综合权重、调仓日前滚动综合权重三条路线并行验证。
 6）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
 7）由调仓日志估算换手率与交易成本。
 8）由调仓日志计算 HHI / effective_n 等持仓集中度指标。
@@ -27,7 +27,15 @@ from analysis.data_quality import (
     price_coverage,
     rebalance_coverage,
 )
-from analysis.ic import daily_ic_spearman, save_ic_series, summarize_ic
+from analysis.factor_diagnostics import batch_factor_group_returns, batch_factor_long_excess
+from analysis.ic import (
+    daily_ic_spearman,
+    ic_distribution_summary,
+    ic_rolling_stability,
+    save_ic_diagnostics,
+    save_ic_series,
+    summarize_ic,
+)
 from analysis.performance import summarize
 from analysis.plotting import (
     plot_effective_n,
@@ -49,6 +57,7 @@ from backtest.backtest_single import run_single_backtest
 from backtest.backtest_utils import long_to_wide, wide_to_long
 from config import Settings, get_settings
 from factors.panel_builder import DEFAULT_FACTOR_ORDER, build_four_factor_panel
+from factors.preprocess import cross_sectional_zscore, preprocess_factor_panel
 from live.cache_io import (
     save_performance_summary,
     save_rebalance_logs,
@@ -57,10 +66,16 @@ from live.cache_io import (
     save_run_cache,
     save_run_config,
     save_data_quality_reports,
+    save_factor_diagnostics,
     save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
-from models.fusion import fuse_equal_weight_zscore, fuse_ic_weighted_zscore
+from models.factor_weighting import build_factor_weight_summary
+from models.fusion import (
+    fuse_equal_weight_zscore,
+    fuse_ic_weighted_zscore,
+    fuse_static_weight_zscore,
+)
 
 
 def _build_fused_zscore_panel(
@@ -92,6 +107,346 @@ def _build_fused_zscore_panel(
     except Exception as e:
         print("【融合】IC 加权失败，回退等权 z-score:", e)
         return fuse_equal_weight_zscore(sub), "equal_zscore"
+
+
+def _panel_date_mask(panel: pd.DataFrame, dates: pd.Index) -> np.ndarray:
+    vals = panel.index.get_level_values("date")
+    return vals.isin(pd.Index(dates))
+
+
+def _split_factor_weight_train_test(
+    panel: pd.DataFrame,
+    prices: pd.DataFrame,
+    settings: Settings,
+) -> tuple[pd.Index, pd.Index]:
+    panel_dates = pd.Index(panel.index.get_level_values("date").unique()).sort_values()
+    dates = pd.Index(prices.index).intersection(panel_dates).sort_values()
+    if len(dates) < 4:
+        raise ValueError("可用于训练/验证切分的日期太少")
+
+    ratio = float(getattr(settings, "factor_weight_train_ratio", 0.5))
+    ratio = min(max(ratio, 0.2), 0.8)
+    split_pos = int(len(dates) * ratio)
+    split_pos = min(max(split_pos, 2), len(dates) - 1)
+    return dates[:split_pos], dates[split_pos:]
+
+
+def _build_train_factor_weight_summary(
+    panel: pd.DataFrame,
+    prices: pd.DataFrame,
+    settings: Settings,
+) -> tuple[pd.DataFrame, dict[str, float], dict[str, object]]:
+    """
+    训练段计算综合权重，验证段只使用固定权重。
+
+    这一步和全样本 `factor_weight_summary` 不同：后者用于诊断审计；这里的
+    `factor_weight_train_summary` 是后续 `FUSED_SCORE_WEIGHTED` 真正使用的权重来源。
+    """
+    train_dates, test_dates = _split_factor_weight_train_test(panel, prices, settings)
+    train_end = pd.Timestamp(train_dates[-1])
+    test_start = pd.Timestamp(test_dates[0])
+    train_panel = panel.loc[_panel_date_mask(panel, train_dates)]
+    train_prices = prices.loc[prices.index <= train_end]
+
+    train_ic_by_name: dict[str, pd.Series] = {}
+    for fname in panel.columns:
+        col = train_panel[fname]
+        if col.notna().sum() == 0:
+            continue
+        try:
+            train_ic_by_name[fname] = daily_ic_spearman(
+                col,
+                train_prices,
+                forward_days=settings.ic_forward_days,
+            )
+        except Exception:
+            continue
+    if not train_ic_by_name:
+        raise ValueError("训练段没有可用 IC，无法计算静态综合权重")
+
+    train_ic_distribution = ic_distribution_summary(train_ic_by_name)
+    train_ic_rolling = ic_rolling_stability(
+        train_ic_by_name,
+        windows=settings.ic_rolling_windows,
+    )
+    _, train_group_summary = batch_factor_group_returns(
+        train_panel,
+        train_prices,
+        factors=list(panel.columns),
+        group_count=settings.factor_group_count,
+        rebalance_freq=settings.rebalance_freq,
+        price_col=settings.price_col,
+        trading_days_per_year=settings.trading_days_per_year,
+    )
+    windows = tuple(int(w) for w in settings.ic_rolling_windows)
+    preferred_window = max(windows) if windows else None
+    summary = build_factor_weight_summary(
+        train_ic_distribution,
+        train_ic_rolling,
+        train_group_summary,
+        factors=list(panel.columns),
+        preferred_rolling_window=preferred_window,
+    )
+    if summary.empty:
+        raise ValueError("训练段综合权重表为空")
+
+    weights = {
+        str(rec["factor"]): float(rec["fusion_weight"])
+        for rec in summary.to_dict("records")
+        if pd.notna(rec.get("fusion_weight"))
+    }
+    meta = {
+        "factor_weight_train_ratio": float(getattr(settings, "factor_weight_train_ratio", 0.5)),
+        "train_start": pd.Timestamp(train_dates[0]),
+        "train_end": train_end,
+        "test_start": test_start,
+        "test_end": pd.Timestamp(test_dates[-1]),
+        "factor_weight_source": "factor_weight_train_summary",
+        "fusion_weight_by_factor": weights,
+    }
+    return summary, weights, meta
+
+
+def _factor_weight_summary_for_history(
+    panel_hist: pd.DataFrame,
+    prices_hist: pd.DataFrame,
+    settings: Settings,
+) -> pd.DataFrame:
+    ic_by_name: dict[str, pd.Series] = {}
+    for fname in panel_hist.columns:
+        col = panel_hist[fname]
+        if col.notna().sum() == 0:
+            continue
+        try:
+            ic_by_name[fname] = daily_ic_spearman(
+                col,
+                prices_hist,
+                forward_days=settings.ic_forward_days,
+            )
+        except Exception:
+            continue
+    if not ic_by_name:
+        return pd.DataFrame()
+
+    ic_distribution = ic_distribution_summary(ic_by_name)
+    ic_rolling = ic_rolling_stability(ic_by_name, windows=settings.ic_rolling_windows)
+    _, group_summary = batch_factor_group_returns(
+        panel_hist,
+        prices_hist,
+        factors=list(panel_hist.columns),
+        group_count=settings.factor_group_count,
+        rebalance_freq=settings.rebalance_freq,
+        price_col=settings.price_col,
+        trading_days_per_year=settings.trading_days_per_year,
+    )
+    windows = tuple(int(w) for w in settings.ic_rolling_windows)
+    preferred_window = max(windows) if windows else None
+    return build_factor_weight_summary(
+        ic_distribution,
+        ic_rolling,
+        group_summary,
+        factors=list(panel_hist.columns),
+        preferred_rolling_window=preferred_window,
+    )
+
+
+def _clean_factor_weights(
+    weights: dict[str, float],
+    factors: list[str],
+) -> pd.Series:
+    raw = pd.Series([float(weights.get(f, 0.0)) for f in factors], index=factors, dtype=float)
+    raw = raw.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+    total = float(raw.sum())
+    if not np.isfinite(total) or total <= 1e-18:
+        return pd.Series(1.0 / len(factors), index=factors, dtype=float)
+    return raw / total
+
+
+def _constrain_factor_weights(
+    weights: pd.Series,
+    *,
+    min_weight: float,
+    max_weight: float,
+) -> pd.Series:
+    factors = list(weights.index)
+    n = len(factors)
+    if n == 0:
+        return pd.Series(dtype=float)
+
+    w = _clean_factor_weights(weights.to_dict(), factors)
+    floor = float(min_weight)
+    if not np.isfinite(floor) or floor < 0.0 or floor * n >= 1.0:
+        floor = 0.0
+    cap = float(max_weight)
+    if not np.isfinite(cap) or cap <= 0.0 or cap * n < 1.0:
+        cap = 1.0
+    cap = min(max(cap, floor), 1.0)
+
+    if floor > 0.0:
+        w = pd.Series(floor, index=factors, dtype=float) + (1.0 - floor * n) * w
+        w = w / float(w.sum())
+
+    if cap >= 1.0:
+        return w
+
+    arr = w.to_numpy(dtype=float)
+    for _ in range(n + 2):
+        over = arr > cap + 1e-12
+        if not bool(over.any()):
+            break
+        excess = float((arr[over] - cap).sum())
+        arr[over] = cap
+        under = ~over
+        room = np.maximum(cap - arr[under], 0.0)
+        room_sum = float(room.sum())
+        if room_sum <= 1e-12:
+            break
+        arr[under] += excess * room / room_sum
+    out = pd.Series(arr, index=factors, dtype=float).clip(lower=0.0)
+    total = float(out.sum())
+    if total <= 1e-18:
+        return pd.Series(1.0 / n, index=factors, dtype=float)
+    return out / total
+
+
+def _last_rebalance_dates(prices: pd.DataFrame, settings: Settings) -> pd.DatetimeIndex:
+    rf = _resample_freq_alias(settings.rebalance_freq)
+    return prices.resample(rf).last().index.intersection(prices.index).sort_values()
+
+
+def _build_rolling_score_weighted_fusion(
+    panel: pd.DataFrame,
+    prices: pd.DataFrame,
+    settings: Settings,
+) -> tuple[pd.Series, pd.DataFrame, dict[str, object]]:
+    """
+    每个调仓日前用历史窗口重新计算综合因子权重，生成滚动融合得分。
+
+    权重只使用调仓日之前的历史数据；样本不足或计算失败时使用上一期权重，
+    若没有上一期则回退等权。输出的日志用于审计每期因子权重如何变化。
+    """
+    factors = list(panel.columns)
+    if not factors:
+        raise ValueError("滚动融合至少需要一列因子")
+
+    price_dates = pd.DatetimeIndex(prices.index).sort_values()
+    rebal_dates = _last_rebalance_dates(prices, settings)
+    if len(rebal_dates) == 0:
+        raise ValueError("无调仓日，无法构造滚动综合权重")
+
+    lookback_days = int(getattr(settings, "rolling_factor_weight_lookback_days", 120))
+    min_days = int(getattr(settings, "rolling_factor_weight_min_days", 60))
+    min_w = float(getattr(settings, "rolling_factor_weight_min_weight", 0.0))
+    max_w = float(getattr(settings, "rolling_factor_weight_max_weight", 1.0))
+    smoothing = float(getattr(settings, "rolling_factor_weight_smoothing", 1.0))
+    if not np.isfinite(smoothing):
+        smoothing = 1.0
+    smoothing = min(max(smoothing, 0.0), 1.0)
+
+    z = cross_sectional_zscore(panel)
+    pieces: list[pd.Series] = []
+    rows: list[dict[str, object]] = []
+    prev_weights: pd.Series | None = None
+
+    for dt in rebal_dates:
+        dt = pd.Timestamp(dt)
+        history_dates = price_dates[price_dates < dt]
+        if lookback_days > 0:
+            history_dates = history_dates[-lookback_days:]
+        history_days = int(len(history_dates))
+        hist_start = pd.Timestamp(history_dates[0]) if history_days else pd.NaT
+        hist_end = pd.Timestamp(history_dates[-1]) if history_days else pd.NaT
+
+        factor_scores = pd.Series(np.nan, index=factors, dtype=float)
+        raw_weights = pd.Series(1.0 / len(factors), index=factors, dtype=float)
+        reason = "computed"
+        summary = pd.DataFrame()
+
+        if history_days < min_days:
+            reason = "insufficient_history_previous" if prev_weights is not None else "insufficient_history_equal"
+            raw_weights = prev_weights.copy() if prev_weights is not None else raw_weights
+        else:
+            try:
+                panel_hist = panel.loc[_panel_date_mask(panel, history_dates)]
+                prices_hist = prices.loc[prices.index.isin(history_dates)]
+                summary = _factor_weight_summary_for_history(panel_hist, prices_hist, settings)
+                if summary.empty:
+                    reason = "empty_summary_previous" if prev_weights is not None else "empty_summary_equal"
+                    raw_weights = prev_weights.copy() if prev_weights is not None else raw_weights
+                else:
+                    factor_scores = pd.Series(
+                        {
+                            str(rec["factor"]): float(rec.get("factor_score", np.nan))
+                            for rec in summary.to_dict("records")
+                        },
+                        dtype=float,
+                    ).reindex(factors)
+                    raw_weights = _clean_factor_weights(
+                        {
+                            str(rec["factor"]): float(rec.get("fusion_weight", 0.0))
+                            for rec in summary.to_dict("records")
+                        },
+                        factors,
+                    )
+            except Exception:
+                reason = "calc_failed_previous" if prev_weights is not None else "calc_failed_equal"
+                raw_weights = prev_weights.copy() if prev_weights is not None else raw_weights
+
+        constrained = _constrain_factor_weights(raw_weights, min_weight=min_w, max_weight=max_w)
+        if prev_weights is not None and smoothing < 1.0:
+            blended = smoothing * constrained + (1.0 - smoothing) * prev_weights.reindex(factors).fillna(0.0)
+            final_weights = _constrain_factor_weights(blended, min_weight=min_w, max_weight=max_w)
+            if reason == "computed":
+                reason = "computed_smoothed"
+        else:
+            final_weights = constrained
+
+        try:
+            z_dt = z.xs(dt, level="date")
+        except KeyError:
+            prev_weights = final_weights
+            continue
+        fused_dt = z_dt.mul(final_weights, axis=1).sum(axis=1)
+        idx = pd.MultiIndex.from_product([[dt], fused_dt.index], names=["date", "symbol"])
+        pieces.append(pd.Series(fused_dt.to_numpy(dtype=float), index=idx))
+
+        for factor in factors:
+            rows.append(
+                {
+                    "date": dt,
+                    "factor": factor,
+                    "factor_score": float(factor_scores.get(factor, np.nan)),
+                    "raw_weight": float(raw_weights.get(factor, np.nan)),
+                    "constrained_weight": float(constrained.get(factor, np.nan)),
+                    "final_weight": float(final_weights.get(factor, np.nan)),
+                    "history_start": hist_start,
+                    "history_end": hist_end,
+                    "history_days": history_days,
+                    "reason": reason,
+                    "min_weight": min_w,
+                    "max_weight": max_w,
+                    "smoothing": smoothing,
+                }
+            )
+        prev_weights = final_weights
+
+    if not pieces:
+        raise ValueError("滚动综合权重没有生成任何调仓日得分")
+
+    fused = pd.concat(pieces).sort_index().astype(float)
+    fused.name = "fused_zscore_rolling_score_weighted"
+    fused.index = fused.index.set_names(["date", "symbol"])
+    log = pd.DataFrame(rows)
+    meta = {
+        "fusion_mode": "rolling_score_weighted",
+        "rolling_factor_weight_lookback_days": lookback_days,
+        "rolling_factor_weight_min_days": min_days,
+        "rolling_factor_weight_min_weight": min_w,
+        "rolling_factor_weight_max_weight": max_w,
+        "rolling_factor_weight_smoothing": smoothing,
+        "rolling_weight_rebalances": int(log["date"].nunique()) if not log.empty else 0,
+    }
+    return fused, log, meta
 
 
 # 无 CSV 时用于 Tushare 拉取（可按需增删；需与积分权限匹配）
@@ -205,6 +560,11 @@ def main() -> None:
         "面板形状: %d 行 × %d 列 (列=%s)"
         % (panel.shape[0], panel.shape[1], list(panel.columns))
     )
+    panel_zscore = preprocess_factor_panel(panel)
+    print(
+        "标准化面板: %d 行 × %d 列（横截面 winsorize + z-score）"
+        % (panel_zscore.shape[0], panel_zscore.shape[1])
+    )
 
     data_quality_reports: dict[str, pd.DataFrame] = {}
     try:
@@ -239,7 +599,7 @@ def main() -> None:
 
     if settings.persist_run_outputs:
         try:
-            paths = save_run_cache(settings, long_df, prices, panel)
+            paths = save_run_cache(settings, long_df, prices, panel, panel_zscore=panel_zscore)
             print(
                 "数据已落盘: %s"
                 % ", ".join("%s=%s" % (k, v) for k, v in paths.items())
@@ -328,13 +688,251 @@ def main() -> None:
     except Exception as e:
         print("【IC】FUSED_ZSCORE 跳过: %s\n" % e)
 
+    ic_distribution = pd.DataFrame()
+    ic_rolling = pd.DataFrame()
+    if ic_by_name:
+        try:
+            ic_distribution = ic_distribution_summary(ic_by_name)
+            ic_rolling = ic_rolling_stability(
+                ic_by_name,
+                windows=settings.ic_rolling_windows,
+            )
+            print("========== IC 分布与稳定性 ==========\n")
+            for rec in ic_distribution.to_dict("records"):
+                print(
+                    "【IC分布】%s  median=%.4f  p25=%.4f  p75=%.4f  正IC=%.2f%%  负IC=%.2f%%"
+                    % (
+                        rec["factor"],
+                        rec["median"],
+                        rec["p25"],
+                        rec["p75"],
+                        rec["positive_rate"] * 100.0,
+                        rec["negative_rate"] * 100.0,
+                    )
+                )
+            if not ic_rolling.empty:
+                for rec in ic_rolling.to_dict("records"):
+                    print(
+                        "【IC滚动】%s  win=%d  last_mean=%.4f  mean>0比例=%.2f%%"
+                        % (
+                            rec["factor"],
+                            rec["window"],
+                            rec["rolling_mean_last"],
+                            rec["rolling_mean_positive_rate"] * 100.0,
+                        )
+                    )
+            print()
+        except Exception as e:
+            print("IC 分布与稳定性诊断失败（不影响回测）:", e)
+            print()
+
     if settings.persist_run_outputs and ic_by_name:
         try:
             ic_paths = save_ic_series(settings, ic_by_name)
             print("IC 序列已落盘:", ", ".join("%s=%s" % (k, v) for k, v in ic_paths.items()))
+            if not ic_distribution.empty or not ic_rolling.empty:
+                ic_diag_paths = save_ic_diagnostics(settings, ic_distribution, ic_rolling)
+                print(
+                    "IC 诊断已保存:",
+                    ", ".join("%s=%s" % (k, v.resolve()) for k, v in ic_diag_paths.items()),
+                )
             print()
         except Exception as e:
             print("IC 落盘失败（不影响回测）:", e)
+            print()
+
+    long_excess_summary = pd.DataFrame()
+    group_return_detail = pd.DataFrame()
+    group_return_summary = pd.DataFrame()
+    factor_weight_summary = pd.DataFrame()
+    factor_weight_train_summary = pd.DataFrame()
+    rolling_factor_weight_log = pd.DataFrame()
+    score_weighted_weights_by_factor: dict[str, float] = {}
+    score_weighted_meta: dict[str, object] = {}
+    fused_rolling_score_weighted = pd.Series(dtype=float)
+    rolling_score_weighted_meta: dict[str, object] = {}
+    print("========== 因子 Top-K 多头超额诊断 ==========\n")
+    try:
+        long_excess_summary, _ = batch_factor_long_excess(
+            panel,
+            prices,
+            factors=DEFAULT_FACTOR_ORDER,
+            top_k=settings.top_k,
+            rebalance_freq=settings.rebalance_freq,
+            price_col=settings.price_col,
+            periods=settings.trading_days_per_year,
+        )
+        if long_excess_summary.empty:
+            print("【多头超额】跳过: 无有效因子列\n")
+        else:
+            for rec in long_excess_summary.to_dict("records"):
+                print(
+                    "【多头超额】%s  ann=%.4f  excess_ann=%.4f  TE=%.4f  IR=%.4f  rebalances=%d"
+                    % (
+                        rec["factor"],
+                        rec["ann_return"],
+                        rec["excess_ann_return"],
+                        rec["tracking_error"],
+                        rec["information_ratio"],
+                        rec["n_rebalances"],
+                    )
+                )
+            print()
+    except Exception as e:
+        print("【多头超额】跳过: %s\n" % e)
+
+    print("========== 因子分组收益与单调性 ==========\n")
+    try:
+        group_return_detail, group_return_summary = batch_factor_group_returns(
+            panel,
+            prices,
+            factors=DEFAULT_FACTOR_ORDER,
+            group_count=settings.factor_group_count,
+            rebalance_freq=settings.rebalance_freq,
+            price_col=settings.price_col,
+            trading_days_per_year=settings.trading_days_per_year,
+        )
+        if group_return_summary.empty:
+            print("【分组收益】跳过: 无有效分组结果\n")
+        else:
+            factor_level = (
+                group_return_summary.sort_values(["factor", "group"])
+                .groupby("factor", as_index=False)
+                .tail(1)
+            )
+            for rec in factor_level.to_dict("records"):
+                print(
+                    "【分组收益】%s  top-bottom=%.4f  ann=%.4f  hit=%.2f%%  monotonicity=%.2f"
+                    % (
+                        rec["factor"],
+                        rec["top_minus_bottom_mean"],
+                        rec["top_minus_bottom_ann"],
+                        rec["top_minus_bottom_hit_rate"] * 100.0,
+                        rec["monotonicity_score"],
+                    )
+                )
+            print()
+    except Exception as e:
+        print("【分组收益】跳过: %s\n" % e)
+
+    if not ic_distribution.empty:
+        print("========== 多因子权重建议（全样本诊断；训练/滚动支路另行使用）==========\n")
+        try:
+            windows = tuple(int(w) for w in settings.ic_rolling_windows)
+            preferred_window = max(windows) if windows else None
+            factor_weight_summary = build_factor_weight_summary(
+                ic_distribution,
+                ic_rolling,
+                group_return_summary,
+                factors=DEFAULT_FACTOR_ORDER,
+                preferred_rolling_window=preferred_window,
+            )
+            if factor_weight_summary.empty:
+                print("【因子权重】跳过: 无有效评分输入\n")
+            else:
+                for rec in factor_weight_summary.to_dict("records"):
+                    print(
+                        "【因子权重】%s  score=%.4f  weight=%.2f%%  meanIC=%.4f  mono=%.2f"
+                        % (
+                            rec["factor"],
+                            rec["factor_score"],
+                            rec["fusion_weight"] * 100.0,
+                            rec["mean_ic"],
+                            rec["monotonicity_score"],
+                        )
+                    )
+                print()
+        except Exception as e:
+            print("【因子权重】跳过: %s\n" % e)
+
+    try:
+        sub_weight = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        if sub_weight.shape[1] > 0:
+            (
+                factor_weight_train_summary,
+                score_weighted_weights_by_factor,
+                score_weighted_meta,
+            ) = _build_train_factor_weight_summary(sub_weight, prices, settings)
+            print("========== 训练段综合权重（用于验证段 FUSED_SCORE_WEIGHTED）==========\n")
+            print(
+                "【训练/验证】train=%s ~ %s；test=%s ~ %s"
+                % (
+                    pd.Timestamp(score_weighted_meta["train_start"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["train_end"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["test_start"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["test_end"]).strftime("%Y-%m-%d"),
+                )
+            )
+            for rec in factor_weight_train_summary.to_dict("records"):
+                print(
+                    "【训练权重】%s  score=%.4f  weight=%.2f%%"
+                    % (
+                        rec["factor"],
+                        rec["factor_score"],
+                        rec["fusion_weight"] * 100.0,
+                    )
+                )
+            print()
+    except Exception as e:
+        print("【训练段综合权重】跳过: %s\n" % e)
+
+    try:
+        sub_rolling = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        if sub_rolling.shape[1] > 0:
+            (
+                fused_rolling_score_weighted,
+                rolling_factor_weight_log,
+                rolling_score_weighted_meta,
+            ) = _build_rolling_score_weighted_fusion(sub_rolling, prices, settings)
+            print("========== 滚动综合权重（用于 FUSED_ROLLING_SCORE_WEIGHTED）==========\n")
+            if not rolling_factor_weight_log.empty:
+                last_dt = pd.Timestamp(rolling_factor_weight_log["date"].max())
+                latest = rolling_factor_weight_log[rolling_factor_weight_log["date"] == last_dt]
+                print(
+                    "【滚动权重】共 %d 个调仓日；最近一期=%s"
+                    % (
+                        int(rolling_score_weighted_meta.get("rolling_weight_rebalances", 0)),
+                        last_dt.strftime("%Y-%m-%d"),
+                    )
+                )
+                for rec in latest.to_dict("records"):
+                    print(
+                        "  %s  final_weight=%.2f%%  reason=%s"
+                        % (
+                            rec["factor"],
+                            rec["final_weight"] * 100.0,
+                            rec["reason"],
+                        )
+                    )
+            print()
+    except Exception as e:
+        print("【滚动综合权重】跳过: %s\n" % e)
+
+    if settings.persist_run_outputs and (
+        not long_excess_summary.empty
+        or not group_return_detail.empty
+        or not group_return_summary.empty
+        or not factor_weight_summary.empty
+        or not factor_weight_train_summary.empty
+        or not rolling_factor_weight_log.empty
+    ):
+        try:
+            diag_paths = save_factor_diagnostics(
+                settings,
+                long_excess_summary,
+                group_return_detail=group_return_detail,
+                group_return_summary=group_return_summary,
+                factor_weight_summary=factor_weight_summary,
+                factor_weight_train_summary=factor_weight_train_summary,
+                rolling_factor_weight_log=rolling_factor_weight_log,
+            )
+            print(
+                "因子诊断已保存: %s"
+                % ", ".join("%s=%s" % (k, v.resolve()) for k, v in diag_paths.items())
+            )
+            print()
+        except Exception as e:
+            print("因子诊断落盘失败（不影响回测）:", e)
             print()
 
     nav_curves: dict[str, pd.Series] = {}
@@ -363,7 +961,7 @@ def main() -> None:
         except Exception as e:
             print("【因子】%s 跳过: %s\n" % (fname, e))
 
-    print("========== 二、多因子融合（z-score；默认 IC 滞后滚动列权）==========\n")
+    print("========== 二、多因子融合（IC rolling + 静态综合权重 + 滚动综合权重）==========\n")
     try:
         sub = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
         if sub.shape[1] == 0:
@@ -386,6 +984,54 @@ def main() -> None:
             meta_f,
             stats_f,
         )
+        if score_weighted_weights_by_factor and score_weighted_meta:
+            fused_sw_all = fuse_static_weight_zscore(sub, score_weighted_weights_by_factor)
+            test_start = pd.Timestamp(score_weighted_meta["test_start"])
+            test_end = pd.Timestamp(score_weighted_meta["test_end"])
+            fused_sw = fused_sw_all.loc[
+                fused_sw_all.index.get_level_values("date") >= test_start
+            ]
+            prices_test = prices.loc[(prices.index >= test_start) & (prices.index <= test_end)]
+            nav_sw, meta_sw = run_multi_backtest(
+                fused=fused_sw,
+                prices=prices_test,
+                settings=settings,
+                factor_name="FUSED_SCORE_WEIGHTED",
+            )
+            meta_sw.update(score_weighted_meta)
+            meta_sw["fusion_mode"] = "static_score_weighted_train_test"
+            stats_sw = summarize(nav_sw, periods=settings.trading_days_per_year)
+            nav_curves["FUSED_SCORE_WEIGHTED"] = nav_sw
+            backtest_meta_by_name["FUSED_SCORE_WEIGHTED"] = meta_sw
+            performance_by_name["FUSED_SCORE_WEIGHTED"] = stats_sw
+            _print_backtest_block(
+                "【融合】FUSED_SCORE_WEIGHTED（训练段权重；验证段回测）",
+                nav_sw,
+                meta_sw,
+                stats_sw,
+            )
+        else:
+            print("【融合】FUSED_SCORE_WEIGHTED 跳过: 无训练段综合权重\n")
+        if not fused_rolling_score_weighted.empty:
+            nav_rw, meta_rw = run_multi_backtest(
+                fused=fused_rolling_score_weighted,
+                prices=prices,
+                settings=settings,
+                factor_name="FUSED_ROLLING_SCORE_WEIGHTED",
+            )
+            meta_rw.update(rolling_score_weighted_meta)
+            stats_rw = summarize(nav_rw, periods=settings.trading_days_per_year)
+            nav_curves["FUSED_ROLLING_SCORE_WEIGHTED"] = nav_rw
+            backtest_meta_by_name["FUSED_ROLLING_SCORE_WEIGHTED"] = meta_rw
+            performance_by_name["FUSED_ROLLING_SCORE_WEIGHTED"] = stats_rw
+            _print_backtest_block(
+                "【融合】FUSED_ROLLING_SCORE_WEIGHTED（调仓日前滚动综合权重）",
+                nav_rw,
+                meta_rw,
+                stats_rw,
+            )
+        else:
+            print("【融合】FUSED_ROLLING_SCORE_WEIGHTED 跳过: 无滚动综合权重得分\n")
     except Exception as e:
         print("【融合】跳过: %s\n" % e)
 

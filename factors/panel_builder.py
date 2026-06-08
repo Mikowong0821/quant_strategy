@@ -87,12 +87,15 @@ def build_four_factor_panel(
             window=getattr(settings, "volume_ratio_window", 20),
         )
 
-    fina = fetch_fina_indicator_panel(
-        list(prices_wide.columns),
-        settings.backtest_start,
-        settings.backtest_end,
-        history_years=settings.fina_history_years,
-    )
+    try:
+        fina = fetch_fina_indicator_panel(
+            list(prices_wide.columns),
+            settings.backtest_start,
+            settings.backtest_end,
+            history_years=settings.fina_history_years,
+        )
+    except Exception:
+        fina = pd.DataFrame()
     if fina.empty:
         idx = mom.index
         pe = pd.Series(index=idx, dtype=float)
