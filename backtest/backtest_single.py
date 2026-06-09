@@ -340,6 +340,83 @@ def _estimate_mu_cov_for_picks(
     return mu, cov
 
 
+def _metric_wide_from_long(
+    data: Any,
+    value_col: str,
+) -> pd.DataFrame | None:
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        return None
+    need = {"trade_date", "ts_code", value_col}
+    if not need.issubset(data.columns):
+        return None
+    try:
+        out = data.pivot(index="trade_date", columns="ts_code", values=value_col)
+    except Exception:
+        return None
+    out.index = pd.to_datetime(out.index)
+    return out.sort_index().sort_index(axis=1)
+
+
+def _liquidity_wide_frames(
+    data: Any,
+    prices_wide: pd.DataFrame,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    volume = _metric_wide_from_long(data, "volume")
+    amount = _metric_wide_from_long(data, "amount")
+    if amount is None:
+        amount = _metric_wide_from_long(data, "turnover")
+    if amount is None and volume is not None:
+        aligned_close = prices_wide.reindex(index=volume.index, columns=volume.columns)
+        amount = volume.astype(float) * aligned_close.astype(float)
+    return volume, amount
+
+
+def _liquidity_filter_symbols(
+    symbols: List[str],
+    dt: pd.Timestamp,
+    settings: Settings,
+    volume_wide: pd.DataFrame | None,
+    amount_wide: pd.DataFrame | None,
+) -> tuple[List[str], dict[str, Any]]:
+    lookback = int(getattr(settings, "liquidity_lookback_days", 20) or 20)
+    min_vol = float(getattr(settings, "min_avg_volume", 0.0) or 0.0)
+    min_amt = float(getattr(settings, "min_avg_amount", 0.0) or 0.0)
+    enabled = min_vol > 0.0 or min_amt > 0.0
+    meta = {
+        "liquidity_filter_enabled": bool(enabled),
+        "liquidity_lookback_days": lookback,
+        "min_avg_volume": min_vol,
+        "min_avg_amount": min_amt,
+        "liquidity_missing_data": False,
+    }
+    if not enabled:
+        return list(symbols), meta
+    if (min_vol > 0.0 and volume_wide is None) or (min_amt > 0.0 and amount_wide is None):
+        meta["liquidity_missing_data"] = True
+        return [], meta
+
+    passed: list[str] = []
+    for sym in symbols:
+        ok = True
+        if min_vol > 0.0 and volume_wide is not None:
+            if sym not in volume_wide.columns:
+                ok = False
+            else:
+                v = volume_wide.loc[volume_wide.index <= dt, sym].tail(max(1, lookback))
+                avg_v = float(v.dropna().mean()) if not v.dropna().empty else float("nan")
+                ok = ok and np.isfinite(avg_v) and avg_v >= min_vol
+        if min_amt > 0.0 and amount_wide is not None:
+            if sym not in amount_wide.columns:
+                ok = False
+            else:
+                a = amount_wide.loc[amount_wide.index <= dt, sym].tail(max(1, lookback))
+                avg_a = float(a.dropna().mean()) if not a.dropna().empty else float("nan")
+                ok = ok and np.isfinite(avg_a) and avg_a >= min_amt
+        if ok:
+            passed.append(sym)
+    return passed, meta
+
+
 def _weights_for_rebalance(
     prices_wide: pd.DataFrame,
     picks: List[str],
@@ -439,6 +516,10 @@ def run_single_backtest(
         close_col=settings.price_col,
     )
     prices_wide = prices_wide.sort_index().sort_index(axis=1)
+    liquidity_data = kwargs.get("liquidity_data")
+    if liquidity_data is None:
+        liquidity_data = kwargs.get("long_prices")
+    volume_wide, amount_wide = _liquidity_wide_frames(liquidity_data, prices_wide)
 
     if factor_values is None:
         if factor_name not in FACTOR_REGISTRY:
@@ -526,16 +607,46 @@ def run_single_backtest(
         if sc.empty:
             continue
         sc = sc.sort_values(ascending=False)
-        picks = []
+        candidate_symbols: list[str] = []
         for sym in sc.index:
             if sym not in px.index:
                 continue
             if not np.isfinite(float(px[sym])):
                 continue
-            picks.append(sym)
+            candidate_symbols.append(str(sym))
+        eligible_symbols, liquidity_meta = _liquidity_filter_symbols(
+            candidate_symbols,
+            pd.Timestamp(dt),
+            settings,
+            volume_wide,
+            amount_wide,
+        )
+        eligible_set = set(eligible_symbols)
+        picks = []
+        for sym in sc.index:
+            ss = str(sym)
+            if ss not in eligible_set:
+                continue
+            picks.append(ss)
             if len(picks) >= k:
                 break
         if not picks:
+            if candidate_symbols:
+                rebalance_log.append(
+                    {
+                        "date": dt,
+                        "picks": [],
+                        "selected_picks": [],
+                        "weights": [],
+                        "weighting": "no_trade_liquidity",
+                        "target_turnover": 0.0,
+                        "turnover_capped": False,
+                        "turnover_scale": 1.0,
+                        "n_candidates_before_liquidity": int(len(candidate_symbols)),
+                        "n_candidates_after_liquidity": int(len(eligible_symbols)),
+                        **liquidity_meta,
+                    }
+                )
             continue
 
         selected_picks = list(picks)
@@ -569,6 +680,9 @@ def run_single_backtest(
                 "target_turnover": float(target_turnover),
                 "turnover_capped": bool(turnover_capped),
                 "turnover_scale": float(turnover_scale),
+                "n_candidates_before_liquidity": int(len(candidate_symbols)),
+                "n_candidates_after_liquidity": int(len(eligible_symbols)),
+                **liquidity_meta,
             }
         )
         prev_target_weights = dict(zip(target_picks, [float(x) for x in target_weights]))

@@ -1,6 +1,6 @@
 # Quant Strategy（MVP）
 
-模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 融合回测（IC 滚动列权 + 训练段静态综合权重 + 调仓日前滚动综合权重）→ 回测（Top-K + 等权 / 夏普 / 风险平价）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与作图 → 实验记录落盘**。
+模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 融合回测（IC 滚动列权 + 训练段静态综合权重 + 调仓日前滚动综合权重）→ 可交易性 / 流动性过滤 → 回测（Top-K + 等权 / 夏普 / 风险平价）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与作图 → 实验记录落盘**。
 
 **文档与代码**：以 `main.py` 与 `config.Settings` 为准；更新行为后请同步修改 `docs/ENGINEERING_OVERVIEW.md`、`docs/FLOW_AND_MODULES.md` 及本 README 相关段落（仓库无自动文档校验）。
 
@@ -11,7 +11,7 @@
 | 在 MVP 内 | 不在 MVP 内（后续扩展） |
 |------------|-------------------------|
 | 行情接入（CSV / Tushare / 合成兜底）、多因子面板（量价 + 财务）、数据质量 / 覆盖率报告、IC 与可选 CSV/图、因子 Top-K 多头超额诊断、分组收益与单调性分析、多因子权重建议表 | `live/signal_system.generate_signals`、`live/paper_trading.run_paper_trading`（仅占位） |
-| 月末再平衡、Top-K、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity`，`max_position_weight` 单票权重上限，`max_rebalance_turnover` 单次换手上限 | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
+| 月末再平衡、Top-K、可交易性 / 流动性过滤、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity`，`max_position_weight` 单票权重上限，`max_rebalance_turnover` 单次换手上限 | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
 | 单因子回测 + **IC 驱动或等权** z-score 融合回测 + **训练段静态综合权重**验证回测 + **调仓日前滚动综合权重**回测、`meta["rebalance_log"]` | `main` 未接 `run_multi_backtest(factors, weights)` 原始因子线性加权入口（代码已有，非主流程） |
 | 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/换手/集中度日志 CSV、`persist_run_outputs` 落盘 | 真实券商 API、实时风控与订单路由 |
 
@@ -66,10 +66,11 @@ python main.py
 7. **多因子权重建议**：`models.factor_weighting.build_factor_weight_summary` 综合 IC 分布、rolling IC、Top-Bottom 与单调性，输出 `factor_score` 与 `fusion_weight`。全样本表用于诊断审计；训练段表用于 `FUSED_SCORE_WEIGHTED`；滚动权重日志用于 `FUSED_ROLLING_SCORE_WEIGHTED`。
 8. **单因子回测**：对每列 `run_single_backtest(fname, factor_values=col, ...)`（**预计算因子**，不调注册表重算）。
 9. **融合回测**：第一条是 **IC 滞后滚动列权（默认）或等权** z-score → `FUSED_ZSCORE`；第二条是训练段 `fusion_weight` 固定后应用到验证段 → `FUSED_SCORE_WEIGHTED`；第三条是每个调仓日前只用历史窗口重新计算权重 → `FUSED_ROLLING_SCORE_WEIGHTED`。三条都通过 `run_multi_backtest(fused=...)` 进入同一套 Top-K 回测。
-10. **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 构造股票池等权基准；每条策略补 `benchmark_ann_return`、`excess_ann_return`、`tracking_error`、`information_ratio`。
-11. **换手与成本**：`analysis.turnover` 从 `meta["rebalance_log"]` 估算逐期 `turnover`、`estimated_cost`，并汇总 `avg_turnover`、`total_turnover`、`estimated_total_cost`。
-12. **风险暴露与集中度**：`analysis.risk_exposure` 从同一份调仓日志计算 `hhi`、`effective_n`、`top1_weight`、`top3_weight` 等，判断策略是否过度集中。
-13. **实验记录与作图**：若 `persist_run_outputs`，保存 `output/cache/run_config.json`、`output/performance_summary.csv`、`output/ic_diagnostics/*.csv`、`output/factor_diagnostics/long_excess_summary.csv`、`output/factor_diagnostics/group_return_detail.csv`、`output/factor_diagnostics/group_return_summary.csv`、`output/factor_diagnostics/factor_weight_summary.csv`、`output/factor_diagnostics/factor_weight_train_summary.csv`、`output/factor_diagnostics/rolling_factor_weight_log.csv`、`output/rebalance_logs/*.csv`、`output/turnover_logs/*.csv`、`output/risk_exposure/*.csv`、`output/data_quality/*.csv`、`ic_compare.png`、`ic_timeseries_*.png`、`weights_*.png`、`turnover_compare.png`、`risk_exposure/effective_n_compare.png`；`plot_nav` → `output/nav_compare.png`，超额净值 → `output/excess_nav_compare.png`。
+10. **可交易性过滤**：若配置了 `min_avg_volume` 或 `min_avg_amount`，回测会在 Top-K 前按过去 `liquidity_lookback_days` 的平均成交量 / 成交额过滤候选股票；过滤前后候选数写入 `rebalance_log`。
+11. **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 构造股票池等权基准；每条策略补 `benchmark_ann_return`、`excess_ann_return`、`tracking_error`、`information_ratio`。
+12. **换手与成本**：`analysis.turnover` 从 `meta["rebalance_log"]` 估算逐期 `turnover`、`estimated_cost`，并汇总 `avg_turnover`、`total_turnover`、`estimated_total_cost`。
+13. **风险暴露与集中度**：`analysis.risk_exposure` 从同一份调仓日志计算 `hhi`、`effective_n`、`top1_weight`、`top3_weight` 等，判断策略是否过度集中。
+14. **实验记录与作图**：若 `persist_run_outputs`，保存 `output/cache/run_config.json`、`output/performance_summary.csv`、`output/ic_diagnostics/*.csv`、`output/factor_diagnostics/long_excess_summary.csv`、`output/factor_diagnostics/group_return_detail.csv`、`output/factor_diagnostics/group_return_summary.csv`、`output/factor_diagnostics/factor_weight_summary.csv`、`output/factor_diagnostics/factor_weight_train_summary.csv`、`output/factor_diagnostics/rolling_factor_weight_log.csv`、`output/rebalance_logs/*.csv`、`output/turnover_logs/*.csv`、`output/risk_exposure/*.csv`、`output/data_quality/*.csv`、`ic_compare.png`、`ic_timeseries_*.png`、`weights_*.png`、`turnover_compare.png`、`risk_exposure/effective_n_compare.png`；`plot_nav` → `output/nav_compare.png`，超额净值 → `output/excess_nav_compare.png`。
 
 ### 回测与配置要点
 
@@ -78,10 +79,11 @@ python main.py
 - **因子分组**：`config.factor_group_count` 默认 `5`；诊断层按因子从低到高分组，`G1` 为低分组，`G5` 为高分组，观察 Top-Bottom 与单调性。
 - **多因子权重建议**：全样本 `factor_weight_summary.csv` 用于观察权重是否合理；训练段 `factor_weight_train_summary.csv` 生成 `FUSED_SCORE_WEIGHTED`；滚动日志 `rolling_factor_weight_log.csv` 记录每个调仓日前实际使用的因子权重，并生成 `FUSED_ROLLING_SCORE_WEIGHTED`。
 - **滚动因子权重保护**：`rolling_factor_weight_lookback_days` 控制历史窗口，`rolling_factor_weight_min_days` 控制最少历史样本，`rolling_factor_weight_min_weight` / `rolling_factor_weight_max_weight` 控制因子权重上下限，`rolling_factor_weight_smoothing` 控制新旧权重平滑。
+- **可交易性过滤**：`min_avg_volume` / `min_avg_amount` 默认为 `0`，表示关闭；设为正数后，回测会在 Top-K 前用过去 `liquidity_lookback_days` 的平均成交量 / 成交额过滤候选股票。调仓日志会记录 `n_candidates_before_liquidity`、`n_candidates_after_liquidity`、`liquidity_filter_enabled` 等字段。
 - **持仓权重**：`config.portfolio_weighting`：`"equal"`、**`"max_sharpe"`（当前默认）** 或 **`"risk_parity"`**；后两者在再平衡日对 Top-K 用历史日收益估协方差（夏普另需 μ），分别调用 `models.optimizer.maximize_sharpe` / `risk_parity`，样本不足等失败则等权。
 - **单票权重上限**：`config.max_position_weight` 默认 `0.4`；当优化权重可行且超过上限时，会裁剪并重新分配剩余权重，`rebalance_log[].weighting` 记录为 `max_sharpe_capped` / `risk_parity_capped` 等。
 - **单次换手上限**：`config.max_rebalance_turnover` 默认 `1.0`；首次建仓不节流，之后若目标权重变化超过上限，会按比例向新目标移动，`rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
-- **调仓记录**：`meta["rebalance_log"]`；`main` 会打印每期标的与权重，并在 `persist_run_outputs=True` 时保存到 `output/rebalance_logs/*.csv`。
+- **调仓记录**：`meta["rebalance_log"]`；`main` 会打印每期标的与权重，并在 `persist_run_outputs=True` 时保存到 `output/rebalance_logs/*.csv`，其中包含流动性过滤前后候选数。
 - **换手记录**：`analysis.turnover` 以调仓目标权重变化估算成交占比，并在 `persist_run_outputs=True` 时保存到 `output/turnover_logs/*.csv`。
 - **集中度记录**：`analysis.risk_exposure` 以 HHI 与 effective_n 衡量持仓是否集中，并在 `persist_run_outputs=True` 时保存到 `output/risk_exposure/`。
 

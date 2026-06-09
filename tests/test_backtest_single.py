@@ -146,5 +146,49 @@ class TestRunSingleRiskParity(unittest.TestCase):
         self.assertIn("max_rebalance_turnover", meta)
 
 
+class TestLiquidityFilter(unittest.TestCase):
+    def test_low_volume_candidate_is_filtered_before_topk(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=45)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(10.0, 11.0, len(days)),
+                "BBB": np.linspace(10.0, 12.0, len(days)),
+            },
+            index=days,
+        )
+        long_rows = []
+        for dt in days:
+            long_rows.append({"trade_date": dt, "ts_code": "AAA", "close": prices.loc[dt, "AAA"], "volume": 5000.0})
+            long_rows.append({"trade_date": dt, "ts_code": "BBB", "close": prices.loc[dt, "BBB"], "volume": 10.0})
+        long_df = pd.DataFrame(long_rows)
+
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB"]], names=["date", "symbol"])
+        factor = pd.Series(0.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 1.0
+        factor.loc[(slice(None), "BBB")] = 2.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=1,
+            min_avg_volume=1000.0,
+            liquidity_lookback_days=5,
+        )
+        _, meta = run_single_backtest(
+            "TEST_LIQ",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+            long_prices=long_df,
+        )
+        log = [rec for rec in (meta.get("rebalance_log") or []) if rec.get("picks")]
+        self.assertGreater(len(log), 0)
+        first = log[0]
+        self.assertEqual(first["selected_picks"], ["AAA"])
+        self.assertEqual(first["n_candidates_before_liquidity"], 2)
+        self.assertEqual(first["n_candidates_after_liquidity"], 1)
+        self.assertTrue(first["liquidity_filter_enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

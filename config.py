@@ -59,6 +59,10 @@ class Settings:
     max_position_weight: float = 0.4
     # 单次再平衡目标权重变化上限；0 表示不启用。首次建仓不节流，避免长期停留在现金状态。
     max_rebalance_turnover: float = 1.0
+    # 可交易性过滤：0 表示关闭；开启后在 Top-K 选股前按过去窗口平均成交量/成交额过滤候选股票。
+    liquidity_lookback_days: int = 20
+    min_avg_volume: float = 0.0
+    min_avg_amount: float = 0.0
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 

@@ -111,6 +111,13 @@ class TestExperimentOutputs(unittest.TestCase):
                     "target_turnover",
                     "turnover_capped",
                     "turnover_scale",
+                    "n_candidates_before_liquidity",
+                    "n_candidates_after_liquidity",
+                    "liquidity_filter_enabled",
+                    "liquidity_lookback_days",
+                    "min_avg_volume",
+                    "min_avg_amount",
+                    "liquidity_missing_data",
                 ],
             )
             self.assertEqual(list(log_df["symbol"]), ["AAA", "BBB"])

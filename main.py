@@ -952,6 +952,7 @@ def main() -> None:
                 prices=prices,
                 settings=settings,
                 factor_values=col,
+                long_prices=long_df,
             )
             stats = summarize(nav, periods=settings.trading_days_per_year)
             nav_curves[fname] = nav
@@ -973,6 +974,7 @@ def main() -> None:
             prices=prices,
             settings=settings,
             factor_name="FUSED_ZSCORE",
+            long_prices=long_df,
         )
         stats_f = summarize(nav_f, periods=settings.trading_days_per_year)
         nav_curves["FUSED_ZSCORE"] = nav_f
@@ -997,6 +999,7 @@ def main() -> None:
                 prices=prices_test,
                 settings=settings,
                 factor_name="FUSED_SCORE_WEIGHTED",
+                long_prices=long_df,
             )
             meta_sw.update(score_weighted_meta)
             meta_sw["fusion_mode"] = "static_score_weighted_train_test"
@@ -1018,6 +1021,7 @@ def main() -> None:
                 prices=prices,
                 settings=settings,
                 factor_name="FUSED_ROLLING_SCORE_WEIGHTED",
+                long_prices=long_df,
             )
             meta_rw.update(rolling_score_weighted_meta)
             stats_rw = summarize(nav_rw, periods=settings.trading_days_per_year)

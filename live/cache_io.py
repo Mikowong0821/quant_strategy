@@ -152,6 +152,13 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
                     "target_turnover": rec.get("target_turnover", ""),
                     "turnover_capped": rec.get("turnover_capped", ""),
                     "turnover_scale": rec.get("turnover_scale", ""),
+                    "n_candidates_before_liquidity": rec.get("n_candidates_before_liquidity", ""),
+                    "n_candidates_after_liquidity": rec.get("n_candidates_after_liquidity", ""),
+                    "liquidity_filter_enabled": rec.get("liquidity_filter_enabled", ""),
+                    "liquidity_lookback_days": rec.get("liquidity_lookback_days", ""),
+                    "min_avg_volume": rec.get("min_avg_volume", ""),
+                    "min_avg_amount": rec.get("min_avg_amount", ""),
+                    "liquidity_missing_data": rec.get("liquidity_missing_data", ""),
                 }
             )
     return pd.DataFrame(
@@ -167,6 +174,13 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
             "target_turnover",
             "turnover_capped",
             "turnover_scale",
+            "n_candidates_before_liquidity",
+            "n_candidates_after_liquidity",
+            "liquidity_filter_enabled",
+            "liquidity_lookback_days",
+            "min_avg_volume",
+            "min_avg_amount",
+            "liquidity_missing_data",
         ],
     )
 

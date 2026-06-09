@@ -275,10 +275,11 @@ flowchart TB
 | 12 | 融合得分（默认带 IC 列权，可关）再跑一条回测。 |
 | 13 | 绩效汇总与终端打印。 |
 | 14 | 构造股票池等权基准，计算超额收益、跟踪误差与信息比率。 |
-| 15 | 根据调仓日志计算换手率、预估交易成本。 |
-| 16 | 根据调仓日志计算 HHI、effective_n、Top 权重等持仓集中度指标。 |
-| 17 | 可选写实验记录：`run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`。 |
-| 18 | 净值图、超额净值图、覆盖率图、换手图、集中度图、IC 图、权重图等；写盘时落 PNG 与 CSV。 |
+| 15 | 在 Top-K 前按可选的平均成交量 / 成交额阈值做可交易性过滤，并把过滤前后候选数写入调仓日志。 |
+| 16 | 根据调仓日志计算换手率、预估交易成本。 |
+| 17 | 根据调仓日志计算 HHI、effective_n、Top 权重等持仓集中度指标。 |
+| 18 | 可选写实验记录：`run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`。 |
+| 19 | 净值图、超额净值图、覆盖率图、换手图、集中度图、IC 图、权重图等；写盘时落 PNG 与 CSV。 |
 
 **数据形态（工程口径）：**长表（一日一标的一行）、宽表（一日一行多标的列）、因子表（日期 × 标的得分；调仓日截面排序）。四列默认因子均约定 **分高者更优**；财务在回测起点前多取若干年历史，减轻样本初期空窗。
 
