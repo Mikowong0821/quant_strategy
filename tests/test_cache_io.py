@@ -12,6 +12,7 @@ import pandas as pd
 from config import get_settings
 from live.cache_io import (
     save_data_quality_reports,
+    save_decision_logs,
     save_performance_summary,
     save_rebalance_logs,
     save_risk_exposure_logs,
@@ -118,10 +119,76 @@ class TestExperimentOutputs(unittest.TestCase):
                     "min_avg_volume",
                     "min_avg_amount",
                     "liquidity_missing_data",
+                    "n_trade_blocked",
+                    "trade_status_filter_enabled",
+                    "trade_status_missing_data",
                 ],
             )
             self.assertEqual(list(log_df["symbol"]), ["AAA", "BBB"])
             self.assertEqual(list(log_df["rank"]), [1, 2])
+
+            decision_logs = save_decision_logs(
+                settings,
+                {
+                    "MOMENTUM": {
+                        "decision_log": [
+                            {
+                                "date": pd.Timestamp("2024-01-31"),
+                                "symbol": "AAA",
+                                "factor_score": 1.2,
+                                "factor_rank": 1,
+                                "passed_liquidity_filter": True,
+                                "selected_by_signal": True,
+                                "selected_rank": 1,
+                                "previous_weight": 0.0,
+                                "raw_target_weight": 0.6,
+                                "final_target_weight": 0.6,
+                                "weighting": "max_sharpe",
+                                "turnover_capped": False,
+                                "action": "buy",
+                                "decision_reason": "selected_topk",
+                            }
+                        ]
+                    }
+                },
+            )
+            decision_path = decision_logs["MOMENTUM"]
+            self.assertTrue(decision_path.is_file())
+            decision_df = pd.read_csv(decision_path)
+            self.assertEqual(
+                list(decision_df.columns),
+                [
+                    "date",
+                    "symbol",
+                    "factor_score",
+                    "factor_rank",
+                    "passed_liquidity_filter",
+                    "selected_by_signal",
+                    "selected_rank",
+                    "previous_weight",
+                    "raw_target_weight",
+                    "final_target_weight",
+                    "weighting",
+                    "turnover_capped",
+                    "is_suspended",
+                    "is_limit_up",
+                    "is_limit_down",
+                    "trade_blocked",
+                    "trade_block_reason",
+                    "action",
+                    "decision_reason",
+                    "n_candidates_before_liquidity",
+                    "n_candidates_after_liquidity",
+                    "liquidity_filter_enabled",
+                    "liquidity_lookback_days",
+                    "min_avg_volume",
+                    "min_avg_amount",
+                    "liquidity_missing_data",
+                    "trade_status_filter_enabled",
+                    "trade_status_missing_data",
+                ],
+            )
+            self.assertEqual(str(decision_df.loc[0, "decision_reason"]), "selected_topk")
 
             turnover_paths = save_turnover_logs(
                 settings,

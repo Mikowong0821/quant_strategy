@@ -371,6 +371,124 @@ def _liquidity_wide_frames(
     return volume, amount
 
 
+def _bool_wide_from_long(
+    data: Any,
+    candidates: tuple[str, ...],
+) -> pd.DataFrame | None:
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        return None
+    for col in candidates:
+        frame = _metric_wide_from_long(data, col)
+        if frame is not None:
+            return frame.astype(bool)
+    return None
+
+
+def _trade_status_wide_frames(
+    data: Any,
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
+    suspended = _bool_wide_from_long(data, ("is_suspended", "suspended"))
+    limit_up = _bool_wide_from_long(data, ("is_limit_up", "limit_up"))
+    limit_down = _bool_wide_from_long(data, ("is_limit_down", "limit_down"))
+    return suspended, limit_up, limit_down
+
+
+def _status_value(frame: pd.DataFrame | None, dt: pd.Timestamp, sym: str) -> bool:
+    if frame is None or sym not in frame.columns:
+        return False
+    try:
+        val = frame.loc[dt, sym]
+    except KeyError:
+        return False
+    if pd.isna(val):
+        return False
+    return bool(val)
+
+
+def _trade_status_for_symbols(
+    symbols: List[str],
+    dt: pd.Timestamp,
+    settings: Settings,
+    suspended_wide: pd.DataFrame | None,
+    limit_up_wide: pd.DataFrame | None,
+    limit_down_wide: pd.DataFrame | None,
+) -> tuple[dict[str, dict[str, bool]], dict[str, Any]]:
+    enabled = bool(getattr(settings, "enable_trade_status_filter", False))
+    meta = {
+        "trade_status_filter_enabled": bool(enabled),
+        "trade_status_missing_data": bool(
+            enabled and suspended_wide is None and limit_up_wide is None and limit_down_wide is None
+        ),
+    }
+    status: dict[str, dict[str, bool]] = {}
+    for sym in symbols:
+        ss = str(sym)
+        status[ss] = {
+            "is_suspended": _status_value(suspended_wide, dt, ss) if enabled else False,
+            "is_limit_up": _status_value(limit_up_wide, dt, ss) if enabled else False,
+            "is_limit_down": _status_value(limit_down_wide, dt, ss) if enabled else False,
+        }
+    return status, meta
+
+
+def _trade_block_reason(
+    prev_weight: float,
+    target_weight: float,
+    status: dict[str, bool],
+    enabled: bool,
+) -> str:
+    if not enabled:
+        return ""
+    eps = 1e-9
+    if bool(status.get("is_suspended", False)) and abs(target_weight - prev_weight) > eps:
+        return "blocked_by_suspension"
+    if bool(status.get("is_limit_up", False)) and target_weight > prev_weight + eps:
+        return "blocked_by_limit_up"
+    if bool(status.get("is_limit_down", False)) and target_weight < prev_weight - eps:
+        return "blocked_by_limit_down"
+    return ""
+
+
+def _apply_trade_status_constraints(
+    prev_target: Dict[str, float],
+    target: Dict[str, float],
+    status_by_symbol: dict[str, dict[str, bool]],
+    enabled: bool,
+) -> tuple[Dict[str, float], dict[str, str], bool]:
+    clean_target = {str(k): float(v) for k, v in target.items() if float(v) > 1e-12}
+    clean_prev = {str(k): float(v) for k, v in prev_target.items() if float(v) > 1e-12}
+    if not enabled or not clean_target:
+        return clean_target, {}, False
+
+    symbols = sorted(set(clean_prev) | set(clean_target))
+    fixed: dict[str, float] = {}
+    flexible: dict[str, float] = {}
+    blocked: dict[str, str] = {}
+    for sym in symbols:
+        prev_w = float(clean_prev.get(sym, 0.0))
+        tgt_w = float(clean_target.get(sym, 0.0))
+        reason = _trade_block_reason(prev_w, tgt_w, status_by_symbol.get(sym, {}), enabled)
+        if reason:
+            blocked[sym] = reason
+            if prev_w > 1e-12:
+                fixed[sym] = prev_w
+        elif tgt_w > 1e-12:
+            flexible[sym] = tgt_w
+
+    fixed_sum = float(sum(fixed.values()))
+    if fixed_sum >= 1.0 - 1e-12:
+        total = fixed_sum
+        return ({k: v / total for k, v in fixed.items()}, blocked, bool(blocked))
+
+    flex_sum = float(sum(flexible.values()))
+    out = dict(fixed)
+    if flex_sum > 1e-12:
+        remain = 1.0 - fixed_sum
+        for sym, w in flexible.items():
+            out[sym] = float(w) / flex_sum * remain
+    return ({k: v for k, v in out.items() if v > 1e-12}, blocked, bool(blocked))
+
+
 def _liquidity_filter_symbols(
     symbols: List[str],
     dt: pd.Timestamp,
@@ -415,6 +533,150 @@ def _liquidity_filter_symbols(
         if ok:
             passed.append(sym)
     return passed, meta
+
+
+def _decision_action(previous_weight: float, final_weight: float) -> str:
+    eps = 1e-9
+    if previous_weight <= eps and final_weight > eps:
+        return "buy"
+    if previous_weight > eps and final_weight <= eps:
+        return "sell"
+    if final_weight > previous_weight + eps:
+        return "increase"
+    if final_weight < previous_weight - eps:
+        return "decrease"
+    if final_weight > eps:
+        return "hold"
+    return "skip"
+
+
+def _decision_reason(
+    *,
+    in_candidate: bool,
+    passed_liquidity: bool,
+    selected: bool,
+    previous_weight: float,
+    raw_target_weight: float,
+    final_target_weight: float,
+    weighting: str,
+    turnover_capped: bool,
+    liquidity_enabled: bool,
+    trade_block_reason: str,
+) -> str:
+    eps = 1e-9
+    if in_candidate and liquidity_enabled and not passed_liquidity:
+        return "filtered_by_liquidity"
+    if selected:
+        reasons = ["selected_topk"]
+        if "fallback" in weighting:
+            reasons.append("optimizer_fallback_equal_weight")
+        if "_capped" in weighting.replace("_turnover_capped", ""):
+            reasons.append("position_cap_applied")
+        if turnover_capped and abs(final_target_weight - raw_target_weight) > eps:
+            reasons.append("turnover_cap_adjusted")
+        if trade_block_reason:
+            reasons.append(trade_block_reason)
+        return "|".join(reasons)
+    if trade_block_reason:
+        return trade_block_reason
+    if raw_target_weight <= eps and final_target_weight > eps and previous_weight > eps and turnover_capped:
+        return "not_selected_but_retained_by_turnover_cap"
+    if in_candidate:
+        return "not_selected_outside_topk"
+    if previous_weight > eps and final_target_weight <= eps:
+        return "previous_holding_exited_not_in_valid_candidates"
+    if previous_weight > eps:
+        return "previous_holding_retained_by_turnover_cap"
+    return "not_in_valid_candidates"
+
+
+def _build_decision_records(
+    *,
+    dt: pd.Timestamp,
+    scores: pd.Series,
+    candidate_symbols: List[str],
+    eligible_symbols: List[str],
+    selected_picks: List[str],
+    raw_target_map: Dict[str, float],
+    final_target_map: Dict[str, float],
+    previous_target_map: Dict[str, float],
+    weighting: str,
+    turnover_capped: bool,
+    liquidity_meta: dict[str, Any],
+    trade_status_by_symbol: dict[str, dict[str, bool]] | None = None,
+    trade_block_reasons: dict[str, str] | None = None,
+    trade_status_meta: dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    candidate_rank = {str(sym): i + 1 for i, sym in enumerate(candidate_symbols)}
+    eligible_set = {str(sym) for sym in eligible_symbols}
+    selected_rank = {str(sym): i + 1 for i, sym in enumerate(selected_picks)}
+    all_symbols = (
+        list(candidate_symbols)
+        + [s for s in previous_target_map if s not in candidate_rank]
+        + [s for s in final_target_map if s not in candidate_rank and s not in previous_target_map]
+    )
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    liquidity_enabled = bool(liquidity_meta.get("liquidity_filter_enabled", False))
+    trade_status_by_symbol = trade_status_by_symbol or {}
+    trade_block_reasons = trade_block_reasons or {}
+    trade_status_meta = trade_status_meta or {
+        "trade_status_filter_enabled": False,
+        "trade_status_missing_data": False,
+    }
+    for sym in all_symbols:
+        ss = str(sym)
+        if ss in seen:
+            continue
+        seen.add(ss)
+        prev_w = float(previous_target_map.get(ss, 0.0) or 0.0)
+        raw_w = float(raw_target_map.get(ss, 0.0) or 0.0)
+        final_w = float(final_target_map.get(ss, 0.0) or 0.0)
+        in_candidate = ss in candidate_rank
+        passed_liquidity = ss in eligible_set if in_candidate else False
+        selected = ss in selected_rank
+        score = scores.get(ss, np.nan)
+        status = trade_status_by_symbol.get(ss, {})
+        trade_block_reason = trade_block_reasons.get(ss, "")
+        rows.append(
+            {
+                "date": dt,
+                "symbol": ss,
+                "factor_score": float(score) if np.isfinite(float(score)) else float("nan"),
+                "factor_rank": candidate_rank.get(ss, ""),
+                "passed_liquidity_filter": bool(passed_liquidity),
+                "selected_by_signal": bool(selected),
+                "selected_rank": selected_rank.get(ss, ""),
+                "previous_weight": prev_w,
+                "raw_target_weight": raw_w,
+                "final_target_weight": final_w,
+                "weighting": weighting,
+                "turnover_capped": bool(turnover_capped),
+                "is_suspended": bool(status.get("is_suspended", False)),
+                "is_limit_up": bool(status.get("is_limit_up", False)),
+                "is_limit_down": bool(status.get("is_limit_down", False)),
+                "trade_blocked": bool(trade_block_reason),
+                "trade_block_reason": trade_block_reason,
+                "action": _decision_action(prev_w, final_w),
+                "decision_reason": _decision_reason(
+                    in_candidate=in_candidate,
+                    passed_liquidity=passed_liquidity,
+                    selected=selected,
+                    previous_weight=prev_w,
+                    raw_target_weight=raw_w,
+                    final_target_weight=final_w,
+                    weighting=weighting,
+                    turnover_capped=turnover_capped,
+                    liquidity_enabled=liquidity_enabled,
+                    trade_block_reason=trade_block_reason,
+                ),
+                "n_candidates_before_liquidity": int(len(candidate_symbols)),
+                "n_candidates_after_liquidity": int(len(eligible_symbols)),
+                **liquidity_meta,
+                **trade_status_meta,
+            }
+        )
+    return rows
 
 
 def _weights_for_rebalance(
@@ -520,6 +782,10 @@ def run_single_backtest(
     if liquidity_data is None:
         liquidity_data = kwargs.get("long_prices")
     volume_wide, amount_wide = _liquidity_wide_frames(liquidity_data, prices_wide)
+    trade_status_data = kwargs.get("trade_status_data")
+    if trade_status_data is None:
+        trade_status_data = kwargs.get("long_prices")
+    suspended_wide, limit_up_wide, limit_down_wide = _trade_status_wide_frames(trade_status_data)
 
     if factor_values is None:
         if factor_name not in FACTOR_REGISTRY:
@@ -589,6 +855,7 @@ def run_single_backtest(
     nav_records: List[Tuple[pd.Timestamp, float]] = []
     n_rebalances = 0
     rebalance_log: List[Dict[str, Any]] = []
+    decision_log: List[Dict[str, Any]] = []
     prev_target_weights: Dict[str, float] = {}
 
     for dt in prices_wide.index:
@@ -621,6 +888,15 @@ def run_single_backtest(
             volume_wide,
             amount_wide,
         )
+        status_symbols = list(dict.fromkeys(candidate_symbols + list(prev_target_weights.keys())))
+        trade_status_by_symbol, trade_status_meta = _trade_status_for_symbols(
+            status_symbols,
+            pd.Timestamp(dt),
+            settings,
+            suspended_wide,
+            limit_up_wide,
+            limit_down_wide,
+        )
         eligible_set = set(eligible_symbols)
         picks = []
         for sym in sc.index:
@@ -647,11 +923,30 @@ def run_single_backtest(
                         **liquidity_meta,
                     }
                 )
+                decision_log.extend(
+                    _build_decision_records(
+                        dt=pd.Timestamp(dt),
+                        scores=sc,
+                        candidate_symbols=candidate_symbols,
+                        eligible_symbols=eligible_symbols,
+                        selected_picks=[],
+                        raw_target_map={},
+                        final_target_map=prev_target_weights,
+                        previous_target_map=prev_target_weights,
+                        weighting="no_trade_liquidity",
+                        turnover_capped=False,
+                        liquidity_meta=liquidity_meta,
+                        trade_status_by_symbol=trade_status_by_symbol,
+                        trade_block_reasons={},
+                        trade_status_meta=trade_status_meta,
+                    )
+                )
             continue
 
         selected_picks = list(picks)
         pick_weights, w_label = _weights_for_rebalance(prices_wide, selected_picks, dt, settings)
-        target_map = _target_weight_map(selected_picks, pick_weights)
+        raw_target_map = _target_weight_map(selected_picks, pick_weights)
+        target_map = dict(raw_target_map)
         target_map, turnover_capped, target_turnover, turnover_scale = _apply_rebalance_turnover_cap(
             prev_target_weights,
             target_map,
@@ -659,11 +954,53 @@ def run_single_backtest(
         )
         if turnover_capped:
             w_label = _turnover_cap_label(w_label)
+        target_map, trade_block_reasons, trade_blocked = _apply_trade_status_constraints(
+            prev_target_weights,
+            target_map,
+            trade_status_by_symbol,
+            bool(getattr(settings, "enable_trade_status_filter", False)),
+        )
         target_picks, target_weights = _target_weight_lists(
             target_map,
             selected_picks + list(prev_target_weights.keys()),
         )
         if not target_picks:
+            if selected_picks:
+                rebalance_log.append(
+                    {
+                        "date": dt,
+                        "picks": [],
+                        "selected_picks": list(selected_picks),
+                        "weights": [],
+                        "weighting": "no_trade_status",
+                        "target_turnover": float(target_turnover),
+                        "turnover_capped": bool(turnover_capped),
+                        "turnover_scale": float(turnover_scale),
+                        "n_candidates_before_liquidity": int(len(candidate_symbols)),
+                        "n_candidates_after_liquidity": int(len(eligible_symbols)),
+                        "n_trade_blocked": int(len(trade_block_reasons)),
+                        **liquidity_meta,
+                        **trade_status_meta,
+                    }
+                )
+                decision_log.extend(
+                    _build_decision_records(
+                        dt=pd.Timestamp(dt),
+                        scores=sc,
+                        candidate_symbols=candidate_symbols,
+                        eligible_symbols=eligible_symbols,
+                        selected_picks=selected_picks,
+                        raw_target_map=raw_target_map,
+                        final_target_map={},
+                        previous_target_map=prev_target_weights,
+                        weighting="no_trade_status",
+                        turnover_capped=turnover_capped,
+                        liquidity_meta=liquidity_meta,
+                        trade_status_by_symbol=trade_status_by_symbol,
+                        trade_block_reasons=trade_block_reasons,
+                        trade_status_meta=trade_status_meta,
+                    )
+                )
             continue
 
         cash, shares = _rebalance_to_target_weights(
@@ -682,10 +1019,31 @@ def run_single_backtest(
                 "turnover_scale": float(turnover_scale),
                 "n_candidates_before_liquidity": int(len(candidate_symbols)),
                 "n_candidates_after_liquidity": int(len(eligible_symbols)),
+                "n_trade_blocked": int(len(trade_block_reasons)),
                 **liquidity_meta,
+                **trade_status_meta,
             }
         )
-        prev_target_weights = dict(zip(target_picks, [float(x) for x in target_weights]))
+        final_target_map = dict(zip(target_picks, [float(x) for x in target_weights]))
+        decision_log.extend(
+            _build_decision_records(
+                dt=pd.Timestamp(dt),
+                scores=sc,
+                candidate_symbols=candidate_symbols,
+                eligible_symbols=eligible_symbols,
+                selected_picks=selected_picks,
+                raw_target_map=raw_target_map,
+                final_target_map=final_target_map,
+                previous_target_map=prev_target_weights,
+                weighting=w_label,
+                turnover_capped=turnover_capped,
+                liquidity_meta=liquidity_meta,
+                trade_status_by_symbol=trade_status_by_symbol,
+                trade_block_reasons=trade_block_reasons,
+                trade_status_meta=trade_status_meta,
+            )
+        )
+        prev_target_weights = final_target_map
         n_rebalances += 1
 
     nav = pd.Series(
@@ -703,6 +1061,8 @@ def run_single_backtest(
         "portfolio_weighting": getattr(settings, "portfolio_weighting", "equal"),
         "max_position_weight": getattr(settings, "max_position_weight", 0.0),
         "max_rebalance_turnover": getattr(settings, "max_rebalance_turnover", 0.0),
+        "enable_trade_status_filter": getattr(settings, "enable_trade_status_filter", False),
         "rebalance_log": rebalance_log,
+        "decision_log": decision_log,
     }
     return nav, meta

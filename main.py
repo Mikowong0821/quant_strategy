@@ -8,7 +8,7 @@
 6）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
 7）由调仓日志估算换手率与交易成本。
 8）由调仓日志计算 HHI / effective_n 等持仓集中度指标。
-9）可选保存运行配置、绩效汇总、调仓日志与图表，形成可复现实验记录。
+9）可选保存运行配置、绩效汇总、调仓日志、决策审计日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -59,6 +59,7 @@ from config import Settings, get_settings
 from factors.panel_builder import DEFAULT_FACTOR_ORDER, build_four_factor_panel
 from factors.preprocess import cross_sectional_zscore, preprocess_factor_panel
 from live.cache_io import (
+    save_decision_logs,
     save_performance_summary,
     save_rebalance_logs,
     save_risk_exposure_logs,
@@ -1166,6 +1167,7 @@ def main() -> None:
             cfg_path = save_run_config(settings)
             perf_path = save_performance_summary(settings, performance_by_name)
             log_paths = save_rebalance_logs(settings, backtest_meta_by_name)
+            decision_paths = save_decision_logs(settings, backtest_meta_by_name)
             turnover_paths = save_turnover_logs(settings, turnover_by_name)
             risk_paths = save_risk_exposure_logs(settings, concentration_by_name)
             risk_summary_path = save_risk_exposure_summary(settings, concentration_summary_by_name)
@@ -1173,6 +1175,8 @@ def main() -> None:
             print("绩效汇总已保存:", perf_path.resolve())
             if log_paths:
                 print("调仓日志已保存: %d 份 → 目录 %s" % (len(log_paths), (outd / "rebalance_logs").resolve()))
+            if decision_paths:
+                print("决策审计日志已保存: %d 份 → 目录 %s" % (len(decision_paths), (outd / "decision_logs").resolve()))
             if turnover_paths:
                 print("换手日志已保存: %d 份 → 目录 %s" % (len(turnover_paths), (outd / "turnover_logs").resolve()))
             if risk_paths:

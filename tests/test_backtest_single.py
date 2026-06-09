@@ -188,6 +188,89 @@ class TestLiquidityFilter(unittest.TestCase):
         self.assertEqual(first["n_candidates_before_liquidity"], 2)
         self.assertEqual(first["n_candidates_after_liquidity"], 1)
         self.assertTrue(first["liquidity_filter_enabled"])
+        decision_log = meta.get("decision_log") or []
+        self.assertGreater(len(decision_log), 0)
+        filtered = [
+            rec
+            for rec in decision_log
+            if rec.get("symbol") == "BBB" and rec.get("decision_reason") == "filtered_by_liquidity"
+        ]
+        self.assertGreater(len(filtered), 0)
+        selected = [
+            rec
+            for rec in decision_log
+            if rec.get("symbol") == "AAA" and rec.get("selected_by_signal")
+        ]
+        self.assertGreater(len(selected), 0)
+        self.assertEqual(selected[0]["action"], "buy")
+
+
+class TestTradeStatusFilter(unittest.TestCase):
+    def test_limit_up_blocks_new_buy(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=45)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(10.0, 11.0, len(days)),
+                "BBB": np.linspace(10.0, 10.5, len(days)),
+            },
+            index=days,
+        )
+        long_rows = []
+        for dt in days:
+            is_rebalance = dt == prices.resample("ME").last().index.intersection(prices.index)[0]
+            long_rows.append(
+                {
+                    "trade_date": dt,
+                    "ts_code": "AAA",
+                    "close": prices.loc[dt, "AAA"],
+                    "volume": 5000.0,
+                    "is_limit_up": bool(is_rebalance),
+                    "is_limit_down": False,
+                    "is_suspended": False,
+                }
+            )
+            long_rows.append(
+                {
+                    "trade_date": dt,
+                    "ts_code": "BBB",
+                    "close": prices.loc[dt, "BBB"],
+                    "volume": 5000.0,
+                    "is_limit_up": False,
+                    "is_limit_down": False,
+                    "is_suspended": False,
+                }
+            )
+        long_df = pd.DataFrame(long_rows)
+
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB"]], names=["date", "symbol"])
+        factor = pd.Series(0.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 2.0
+        factor.loc[(slice(None), "BBB")] = 1.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=1,
+            enable_trade_status_filter=True,
+            max_rebalance_turnover=0.0,
+        )
+        _, meta = run_single_backtest(
+            "TEST_STATUS",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+            long_prices=long_df,
+        )
+        decision_log = meta.get("decision_log") or []
+        blocked = [
+            rec
+            for rec in decision_log
+            if rec.get("symbol") == "AAA" and rec.get("trade_block_reason") == "blocked_by_limit_up"
+        ]
+        self.assertGreater(len(blocked), 0)
+        self.assertTrue(blocked[0]["trade_blocked"])
+        self.assertEqual(blocked[0]["final_target_weight"], 0.0)
+        self.assertIn("blocked_by_limit_up", blocked[0]["decision_reason"])
 
 
 if __name__ == "__main__":

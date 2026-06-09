@@ -159,6 +159,9 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
                     "min_avg_volume": rec.get("min_avg_volume", ""),
                     "min_avg_amount": rec.get("min_avg_amount", ""),
                     "liquidity_missing_data": rec.get("liquidity_missing_data", ""),
+                    "n_trade_blocked": rec.get("n_trade_blocked", ""),
+                    "trade_status_filter_enabled": rec.get("trade_status_filter_enabled", ""),
+                    "trade_status_missing_data": rec.get("trade_status_missing_data", ""),
                 }
             )
     return pd.DataFrame(
@@ -181,6 +184,81 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
             "min_avg_volume",
             "min_avg_amount",
             "liquidity_missing_data",
+            "n_trade_blocked",
+            "trade_status_filter_enabled",
+            "trade_status_missing_data",
+        ],
+    )
+
+
+def _decision_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for rec in log:
+        dt = rec.get("date")
+        date_s = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)
+        rows.append(
+            {
+                "date": date_s,
+                "symbol": rec.get("symbol", ""),
+                "factor_score": rec.get("factor_score", ""),
+                "factor_rank": rec.get("factor_rank", ""),
+                "passed_liquidity_filter": rec.get("passed_liquidity_filter", ""),
+                "selected_by_signal": rec.get("selected_by_signal", ""),
+                "selected_rank": rec.get("selected_rank", ""),
+                "previous_weight": rec.get("previous_weight", ""),
+                "raw_target_weight": rec.get("raw_target_weight", ""),
+                "final_target_weight": rec.get("final_target_weight", ""),
+                "weighting": rec.get("weighting", ""),
+                "turnover_capped": rec.get("turnover_capped", ""),
+                "is_suspended": rec.get("is_suspended", ""),
+                "is_limit_up": rec.get("is_limit_up", ""),
+                "is_limit_down": rec.get("is_limit_down", ""),
+                "trade_blocked": rec.get("trade_blocked", ""),
+                "trade_block_reason": rec.get("trade_block_reason", ""),
+                "action": rec.get("action", ""),
+                "decision_reason": rec.get("decision_reason", ""),
+                "n_candidates_before_liquidity": rec.get("n_candidates_before_liquidity", ""),
+                "n_candidates_after_liquidity": rec.get("n_candidates_after_liquidity", ""),
+                "liquidity_filter_enabled": rec.get("liquidity_filter_enabled", ""),
+                "liquidity_lookback_days": rec.get("liquidity_lookback_days", ""),
+                "min_avg_volume": rec.get("min_avg_volume", ""),
+                "min_avg_amount": rec.get("min_avg_amount", ""),
+                "liquidity_missing_data": rec.get("liquidity_missing_data", ""),
+                "trade_status_filter_enabled": rec.get("trade_status_filter_enabled", ""),
+                "trade_status_missing_data": rec.get("trade_status_missing_data", ""),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "date",
+            "symbol",
+            "factor_score",
+            "factor_rank",
+            "passed_liquidity_filter",
+            "selected_by_signal",
+            "selected_rank",
+            "previous_weight",
+            "raw_target_weight",
+            "final_target_weight",
+            "weighting",
+            "turnover_capped",
+            "is_suspended",
+            "is_limit_up",
+            "is_limit_down",
+            "trade_blocked",
+            "trade_block_reason",
+            "action",
+            "decision_reason",
+            "n_candidates_before_liquidity",
+            "n_candidates_after_liquidity",
+            "liquidity_filter_enabled",
+            "liquidity_lookback_days",
+            "min_avg_volume",
+            "min_avg_amount",
+            "liquidity_missing_data",
+            "trade_status_filter_enabled",
+            "trade_status_missing_data",
         ],
     )
 
@@ -198,6 +276,24 @@ def save_rebalance_logs(
         path = base / ("%s.csv" % safe)
         log = list(meta.get("rebalance_log") or [])
         df = _rebalance_log_to_frame(log)
+        df.to_csv(path, index=False)
+        out[str(name)] = path
+    return out
+
+
+def save_decision_logs(
+    settings: Settings,
+    meta_by_name: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Path]:
+    """将各策略逐标的调仓决策审计日志写入 output/decision_logs/<strategy>.csv。"""
+    base = settings.output_dir / "decision_logs"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, meta in meta_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        log = list(meta.get("decision_log") or [])
+        df = _decision_log_to_frame(log)
         df.to_csv(path, index=False)
         out[str(name)] = path
     return out

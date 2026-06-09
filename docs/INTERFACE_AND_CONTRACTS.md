@@ -81,12 +81,12 @@
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel, panel_zscore=None)` | `Settings`、行情、原始因子面板与可选标准化面板 | 写 `output/cache/` 下 `prices_long.csv`、`factor_panel.csv`、`factor_panel_zscore.csv` 等 |
-| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_turnover_logs`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports`、`save_factor_diagnostics` | `Settings`、绩效 dict、回测 meta、换手表、集中度表、数据质量表、因子诊断表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv`、`factor_diagnostics/*.csv` |
+| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports`、`save_factor_diagnostics` | `Settings`、绩效 dict、回测 meta、换手表、集中度表、数据质量表、因子诊断表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv`、`factor_diagnostics/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong | `PanelLong`（Series 或单列表 DataFrame） |
 | `factors.preprocess` | `winsorize_series`、`cross_sectional_zscore`、`preprocess_factor_panel` | 原始因子面板 | 清洗后的横截面 z-score 面板 |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
-| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、可选 `long_prices` / `liquidity_data`、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`）、`Settings.max_position_weight`、`Settings.max_rebalance_turnover`、`Settings.min_avg_volume` / `min_avg_amount` | `NavSeries` + `meta`（含 `rebalance_log`：每期 `date/picks/selected_picks/weights/weighting/target_turnover/turnover_capped/turnover_scale`、流动性过滤前后候选数、`portfolio_weighting`、`max_position_weight`、`max_rebalance_turnover` 等） |
+| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、可选 `long_prices` / `liquidity_data` / `trade_status_data`、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`）、`Settings.max_position_weight`、`Settings.max_rebalance_turnover`、`Settings.min_avg_volume` / `min_avg_amount`、`Settings.enable_trade_status_filter` | `NavSeries` + `meta`（含 `rebalance_log`；含 `decision_log`：逐股票 `factor_score/factor_rank/passed_liquidity_filter/selected_by_signal/is_suspended/is_limit_up/is_limit_down/trade_block_reason/previous_weight/raw_target_weight/final_target_weight/action/decision_reason` 等） |
 | `backtest.backtest_multi` | `run_multi_backtest(fused=..., prices=...)` 或 `run_multi_backtest(factors, weights=..., prices=...)` | 已融合得分 **或** 多列因子 + 线性权重 | `NavSeries` + `meta`（含 `multi_mode`：`pre_fused` / `linear_weight`） |
 | `models.optimizer` | `maximize_sharpe` / `risk_parity` | `mu`、`cov` 与标的顺序一致（`risk_parity` 仅需 `cov`） | 权重向量；`maximize_sharpe` / `risk_parity` 在对应 `portfolio_weighting` 时由回测于再平衡日调用 |
 | `models.fusion` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_static_weight_zscore`、`fuse_models(...)` | 多列因子 Panel；`fuse_ic` 另需各列日 IC `Series`；静态融合另需 `{factor: weight}` | 单列综合得分 `PanelLong` |
@@ -109,7 +109,8 @@
 1. **再平衡日**：由 `config.rebalance_freq`（pandas offset 字符串，**月末建议 `ME`**；pandas 3 起 `M` 已弃用，`backtest_single` 内会将 `M` 映射为 `ME`）或显式 `rebalance_dates` 提供；回测模块仅在再平衡日更新目标权重。
 2. **停牌/缺失价**：该日该标的不参与交易；若因子为 NaN，**默认剔除该标的于该截面**（或在单因子回测中记为「无效」，由 `backtest_utils` 统一策略）。
 3. **流动性过滤**：若 `min_avg_volume` / `min_avg_amount` 为正，回测会在 Top-K 前使用 `long_prices` / `liquidity_data` 中的 `volume`、`amount` 或 `turnover` 字段计算过去窗口均值；缺少对应数据时该期无法通过该过滤。
-4. **未来函数**：因子 `calc_*` 的输出在日期 `t` 必须**仅依赖 ≤ t 的公开数据**；标签（供 fusion 中 ML 使用）在单独函数中计算，**不得**与因子同文件混写而不标注。
+4. **交易状态约束**：若 `enable_trade_status_filter=True`，回测会读取 `is_suspended` / `is_limit_up` / `is_limit_down`。停牌不能买卖，涨停不能买入 / 加仓，跌停不能卖出 / 减仓；缺少字段时默认不阻断但会记录 `trade_status_missing_data`。
+5. **未来函数**：因子 `calc_*` 的输出在日期 `t` 必须**仅依赖 ≤ t 的公开数据**；标签（供 fusion 中 ML 使用）在单独函数中计算，**不得**与因子同文件混写而不标注。
 
 ---
 
@@ -130,6 +131,7 @@
 | `max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，首次建仓不节流，`0` 表示关闭 |
 | `liquidity_lookback_days` | 可交易性过滤使用的成交量 / 成交额均值窗口 |
 | `min_avg_volume` / `min_avg_amount` | Top-K 前的最小平均成交量 / 成交额过滤；默认 `0` 表示关闭 |
+| `enable_trade_status_filter` | 停牌 / 涨跌停交易状态约束；默认关闭 |
 | `optimizer_return_window` / `optimizer_min_obs` | 夏普配权用历史收益窗口与最少样本数 |
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `ic_rolling_windows` | IC 稳定性诊断窗口；默认 `(20, 60)`，用于滚动均值、滚动波动、滚动正值比例 |

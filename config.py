@@ -63,6 +63,8 @@ class Settings:
     liquidity_lookback_days: int = 20
     min_avg_volume: float = 0.0
     min_avg_amount: float = 0.0
+    # 交易状态约束：默认关闭；开启后读取 is_suspended/is_limit_up/is_limit_down，限制停牌与涨跌停下的买卖。
+    enable_trade_status_filter: bool = False
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 
