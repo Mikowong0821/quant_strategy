@@ -273,5 +273,100 @@ class TestTradeStatusFilter(unittest.TestCase):
         self.assertIn("blocked_by_limit_up", blocked[0]["decision_reason"])
 
 
+class TestIndustryCap(unittest.TestCase):
+    def test_industry_cap_limits_group_exposure(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=45)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(10.0, 11.0, len(days)),
+                "BBB": np.linspace(10.0, 10.8, len(days)),
+                "CCC": np.linspace(10.0, 10.5, len(days)),
+            },
+            index=days,
+        )
+        long_rows = []
+        for dt in days:
+            long_rows.append({"trade_date": dt, "ts_code": "AAA", "close": prices.loc[dt, "AAA"], "volume": 5000.0, "industry": "Tech"})
+            long_rows.append({"trade_date": dt, "ts_code": "BBB", "close": prices.loc[dt, "BBB"], "volume": 5000.0, "industry": "Tech"})
+            long_rows.append({"trade_date": dt, "ts_code": "CCC", "close": prices.loc[dt, "CCC"], "volume": 5000.0, "industry": "Bank"})
+        long_df = pd.DataFrame(long_rows)
+
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB", "CCC"]], names=["date", "symbol"])
+        factor = pd.Series(0.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 3.0
+        factor.loc[(slice(None), "BBB")] = 2.0
+        factor.loc[(slice(None), "CCC")] = 1.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=3,
+            max_industry_weight=0.6,
+            max_rebalance_turnover=0.0,
+        )
+        _, meta = run_single_backtest(
+            "TEST_INDUSTRY",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+            long_prices=long_df,
+        )
+        log = [rec for rec in (meta.get("rebalance_log") or []) if rec.get("picks")]
+        self.assertGreater(len(log), 0)
+        first = log[0]
+        weights = dict(zip(first["picks"], first["weights"]))
+        self.assertTrue(first["industry_cap_applied"])
+        self.assertLessEqual(weights["AAA"] + weights["BBB"], 0.6 + 1e-9)
+        self.assertAlmostEqual(weights["CCC"], 0.4)
+
+        decision_log = meta.get("decision_log") or []
+        selected = [rec for rec in decision_log if rec.get("symbol") == "AAA" and rec.get("selected_by_signal")]
+        self.assertGreater(len(selected), 0)
+        self.assertEqual(selected[0]["industry"], "Tech")
+        self.assertTrue(selected[0]["industry_cap_applied"])
+        self.assertIn("industry_cap_adjusted", selected[0]["decision_reason"])
+
+
+class TestVolatilityTarget(unittest.TestCase):
+    def test_volatility_target_scales_exposure_to_cash(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=80)
+        rng = np.random.default_rng(7)
+        returns = rng.normal(0.0005, 0.035, size=(len(days), 2))
+        px = 100.0 * np.cumprod(1.0 + returns, axis=0)
+        prices = pd.DataFrame(px, index=days, columns=["AAA", "BBB"])
+
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB"]], names=["date", "symbol"])
+        factor = pd.Series(1.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 2.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=2,
+            target_volatility=0.02,
+            volatility_target_lookback_days=30,
+            volatility_target_min_obs=5,
+            max_rebalance_turnover=0.0,
+        )
+        _, meta = run_single_backtest(
+            "TEST_VOL_TARGET",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+        )
+        log = [rec for rec in (meta.get("rebalance_log") or []) if rec.get("picks")]
+        self.assertGreater(len(log), 0)
+        first = log[0]
+        self.assertTrue(first["volatility_target_applied"])
+        self.assertLess(first["volatility_target_scale"], 1.0)
+        self.assertLess(sum(first["weights"]), 1.0)
+        self.assertGreater(first["cash_target_weight"], 0.0)
+
+        decision_log = meta.get("decision_log") or []
+        selected = [rec for rec in decision_log if rec.get("symbol") == "AAA" and rec.get("selected_by_signal")]
+        self.assertGreater(len(selected), 0)
+        self.assertIn("volatility_target_scaled", selected[0]["decision_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -290,7 +290,7 @@ def _constrain_factor_weights(
     if cap >= 1.0:
         return w
 
-    arr = w.to_numpy(dtype=float)
+    arr = w.to_numpy(dtype=float).copy()
     for _ in range(n + 2):
         over = arr > cap + 1e-12
         if not bool(over.any()):

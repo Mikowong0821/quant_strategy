@@ -65,6 +65,13 @@ class Settings:
     min_avg_amount: float = 0.0
     # 交易状态约束：默认关闭；开启后读取 is_suspended/is_limit_up/is_limit_down，限制停牌与涨跌停下的买卖。
     enable_trade_status_filter: bool = False
+    # 行业权重上限：0 表示关闭；开启后读取 industry 列，限制单个行业目标权重占比。
+    max_industry_weight: float = 0.0
+    industry_col: str = "industry"
+    # 波动率目标：0 表示关闭；开启后按历史协方差估算组合年化波动，超目标时降低股票仓位，剩余保留现金。
+    target_volatility: float = 0.0
+    volatility_target_lookback_days: int = 60
+    volatility_target_min_obs: int = 20
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 

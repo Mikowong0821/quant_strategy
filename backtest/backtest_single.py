@@ -2,7 +2,8 @@
 单因子回测。契约：输入因子名或预计算 PanelLong，输出 NavSeries + 元信息。
 
 月末调仓、Top-K 多头、收盘价成交、单边手续费；持仓权重见 config.portfolio_weighting（equal / max_sharpe / risk_parity）。
-若 config.max_position_weight / max_rebalance_turnover 可行，会在目标权重生成后限制单票上限与单次换手。
+若 config.max_position_weight / max_industry_weight / target_volatility / max_rebalance_turnover 可行，
+会在目标权重生成后限制单票、行业、组合波动与单次换手。
 """
 from __future__ import annotations
 
@@ -108,7 +109,7 @@ def _rebalance_to_target_weights(
     pick_weights: List[float],
     commission_rate: float,
 ) -> Tuple[float, pd.Series]:
-    """与等权调仓同一撮合逻辑，但 picks[i] 的目标资金占比为 pick_weights[i]（须非负且和为 1）。"""
+    """与等权调仓同一撮合逻辑；pick_weights 为目标股票仓位，和小于 1 时剩余保留现金。"""
     shares = shares.copy()
     if not picks or not pick_weights:
         return cash, shares
@@ -117,7 +118,10 @@ def _rebalance_to_target_weights(
     ssum = float(sum(pick_weights))
     if ssum <= 1e-12:
         return cash, shares
-    pw = [float(w) / ssum for w in pick_weights]
+    if ssum > 1.0 + 1e-12:
+        pw = [float(w) / ssum for w in pick_weights]
+    else:
+        pw = [max(float(w), 0.0) for w in pick_weights]
     wmap = dict(zip(picks, pw))
     nav0 = _portfolio_value(cash, shares, px)
     tgt_dollar = {s: (nav0 * float(wmap[s]) if s in wmap else 0.0) for s in shares.index}
@@ -293,8 +297,6 @@ def _apply_rebalance_turnover_cap(
         if w > 1e-12:
             capped[sym] = float(w)
     total = float(sum(capped.values()))
-    if total > 1e-12:
-        capped = {k: v / total for k, v in capped.items()}
     return capped, True, turnover, scale
 
 
@@ -338,6 +340,60 @@ def _estimate_mu_cov_for_picks(
     if cov.shape != (len(picks), len(picks)) or not np.all(np.isfinite(cov)):
         return None
     return mu, cov
+
+
+def _apply_volatility_target(
+    target: Dict[str, float],
+    prices_wide: pd.DataFrame,
+    dt: pd.Timestamp,
+    settings: Settings,
+) -> tuple[Dict[str, float], dict[str, Any]]:
+    target_vol = float(getattr(settings, "target_volatility", 0.0) or 0.0)
+    enabled = bool(np.isfinite(target_vol) and target_vol > 0.0)
+    meta: dict[str, Any] = {
+        "volatility_target_enabled": enabled,
+        "target_volatility": target_vol,
+        "portfolio_estimated_volatility": float("nan"),
+        "volatility_target_scale": 1.0,
+        "cash_target_weight": max(0.0, 1.0 - float(sum(target.values()))),
+        "volatility_target_applied": False,
+        "volatility_target_missing_data": False,
+    }
+    if not target:
+        return {}, meta
+    if not enabled:
+        return dict(target), meta
+
+    symbols = list(target)
+    est = _estimate_mu_cov_for_picks(
+        prices_wide,
+        symbols,
+        dt,
+        window=int(getattr(settings, "volatility_target_lookback_days", 60) or 60),
+        min_obs=int(getattr(settings, "volatility_target_min_obs", 20) or 20),
+    )
+    if est is None:
+        meta["volatility_target_missing_data"] = True
+        return dict(target), meta
+    _, cov = est
+    weights = np.asarray([float(target[s]) for s in symbols], dtype=float)
+    port_var = float(weights @ cov @ weights)
+    if not np.isfinite(port_var) or port_var < 0.0:
+        meta["volatility_target_missing_data"] = True
+        return dict(target), meta
+
+    ann_vol = float(np.sqrt(max(port_var, 0.0)) * np.sqrt(float(settings.trading_days_per_year)))
+    meta["portfolio_estimated_volatility"] = ann_vol
+    if ann_vol <= target_vol + 1e-12 or ann_vol <= 1e-12:
+        meta["cash_target_weight"] = max(0.0, 1.0 - float(sum(target.values())))
+        return dict(target), meta
+
+    scale = max(0.0, min(1.0, target_vol / ann_vol))
+    scaled = {sym: float(w) * scale for sym, w in target.items() if float(w) * scale > 1e-12}
+    meta["volatility_target_scale"] = float(scale)
+    meta["cash_target_weight"] = max(0.0, 1.0 - float(sum(scaled.values())))
+    meta["volatility_target_applied"] = True
+    return scaled, meta
 
 
 def _metric_wide_from_long(
@@ -391,6 +447,125 @@ def _trade_status_wide_frames(
     limit_up = _bool_wide_from_long(data, ("is_limit_up", "limit_up"))
     limit_down = _bool_wide_from_long(data, ("is_limit_down", "limit_down"))
     return suspended, limit_up, limit_down
+
+
+def _industry_wide_from_long(
+    data: Any,
+    industry_col: str,
+) -> pd.DataFrame | None:
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        return None
+    need = {"trade_date", "ts_code", industry_col}
+    if not need.issubset(data.columns):
+        return None
+    try:
+        out = data.pivot(index="trade_date", columns="ts_code", values=industry_col)
+    except Exception:
+        return None
+    out.index = pd.to_datetime(out.index)
+    return out.sort_index().sort_index(axis=1)
+
+
+def _industry_map_for_symbols(
+    symbols: List[str],
+    dt: pd.Timestamp,
+    settings: Settings,
+    industry_wide: pd.DataFrame | None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    max_weight = float(getattr(settings, "max_industry_weight", 0.0) or 0.0)
+    enabled = max_weight > 0.0 and max_weight < 1.0
+    meta = {
+        "industry_cap_enabled": bool(enabled),
+        "max_industry_weight": max_weight,
+        "industry_missing_data": bool(enabled and industry_wide is None),
+    }
+    out: dict[str, str] = {}
+    if not enabled:
+        return out, meta
+    for sym in symbols:
+        ss = str(sym)
+        industry = "UNKNOWN"
+        if industry_wide is not None and ss in industry_wide.columns:
+            try:
+                hist = industry_wide.loc[industry_wide.index <= dt, ss].dropna()
+            except KeyError:
+                hist = pd.Series(dtype=object)
+            if not hist.empty:
+                val = hist.iloc[-1]
+                if pd.notna(val) and str(val).strip():
+                    industry = str(val).strip()
+        out[ss] = industry
+    return out, meta
+
+
+def _apply_industry_weight_cap(
+    target: Dict[str, float],
+    industry_by_symbol: dict[str, str],
+    max_industry_weight: float,
+) -> tuple[Dict[str, float], bool, dict[str, float]]:
+    if not target:
+        return {}, False, {}
+    clean = {str(k): max(float(v), 0.0) for k, v in target.items() if float(v) > 1e-12}
+    total = float(sum(clean.values()))
+    if total <= 1e-12:
+        return {}, False, {}
+    weights = {k: v / total for k, v in clean.items()}
+    cap = float(max_industry_weight)
+    if not np.isfinite(cap) or cap <= 0.0 or cap >= 1.0:
+        exposure = _industry_exposure(weights, industry_by_symbol)
+        return weights, False, exposure
+
+    industries = {industry_by_symbol.get(sym, "UNKNOWN") for sym in weights}
+    if cap * len(industries) < 1.0 - 1e-12:
+        exposure = _industry_exposure(weights, industry_by_symbol)
+        return weights, False, exposure
+
+    capped = dict(weights)
+    changed = False
+    for _ in range(len(industries) + len(weights) + 2):
+        exposure = _industry_exposure(capped, industry_by_symbol)
+        over = {ind: w for ind, w in exposure.items() if w > cap + 1e-12}
+        if not over:
+            break
+        changed = True
+        for ind, exp in over.items():
+            scale = cap / exp if exp > 1e-12 else 1.0
+            for sym in list(capped):
+                if industry_by_symbol.get(sym, "UNKNOWN") == ind:
+                    capped[sym] *= scale
+
+        exposure = _industry_exposure(capped, industry_by_symbol)
+        gap = 1.0 - float(sum(capped.values()))
+        if gap <= 1e-12:
+            break
+        room_by_ind = {ind: max(cap - exposure.get(ind, 0.0), 0.0) for ind in industries}
+        eligible = {
+            sym: room_by_ind.get(industry_by_symbol.get(sym, "UNKNOWN"), 0.0)
+            for sym in capped
+            if room_by_ind.get(industry_by_symbol.get(sym, "UNKNOWN"), 0.0) > 1e-12
+        }
+        room_total = float(sum(eligible.values()))
+        if room_total <= 1e-12:
+            break
+        for sym, room in eligible.items():
+            capped[sym] += gap * room / room_total
+
+    s = float(sum(capped.values()))
+    if s > 1e-12:
+        capped = {k: v / s for k, v in capped.items() if v > 1e-12}
+    exposure = _industry_exposure(capped, industry_by_symbol)
+    return capped, changed, exposure
+
+
+def _industry_exposure(
+    target: Dict[str, float],
+    industry_by_symbol: dict[str, str],
+) -> dict[str, float]:
+    exposure: dict[str, float] = {}
+    for sym, weight in target.items():
+        ind = industry_by_symbol.get(str(sym), "UNKNOWN")
+        exposure[ind] = exposure.get(ind, 0.0) + float(weight)
+    return exposure
 
 
 def _status_value(frame: pd.DataFrame | None, dt: pd.Timestamp, sym: str) -> bool:
@@ -562,6 +737,8 @@ def _decision_reason(
     turnover_capped: bool,
     liquidity_enabled: bool,
     trade_block_reason: str,
+    industry_cap_adjusted: bool,
+    volatility_target_scaled: bool,
 ) -> str:
     eps = 1e-9
     if in_candidate and liquidity_enabled and not passed_liquidity:
@@ -574,6 +751,10 @@ def _decision_reason(
             reasons.append("position_cap_applied")
         if turnover_capped and abs(final_target_weight - raw_target_weight) > eps:
             reasons.append("turnover_cap_adjusted")
+        if industry_cap_adjusted and abs(final_target_weight - raw_target_weight) > eps:
+            reasons.append("industry_cap_adjusted")
+        if volatility_target_scaled and abs(final_target_weight - raw_target_weight) > eps:
+            reasons.append("volatility_target_scaled")
         if trade_block_reason:
             reasons.append(trade_block_reason)
         return "|".join(reasons)
@@ -603,9 +784,15 @@ def _build_decision_records(
     weighting: str,
     turnover_capped: bool,
     liquidity_meta: dict[str, Any],
+    industry_target_map: Dict[str, float] | None = None,
+    volatility_target_map: Dict[str, float] | None = None,
+    volatility_target_meta: dict[str, Any] | None = None,
     trade_status_by_symbol: dict[str, dict[str, bool]] | None = None,
     trade_block_reasons: dict[str, str] | None = None,
     trade_status_meta: dict[str, Any] | None = None,
+    industry_by_symbol: dict[str, str] | None = None,
+    industry_cap_meta: dict[str, Any] | None = None,
+    industry_cap_applied: bool = False,
 ) -> List[Dict[str, Any]]:
     candidate_rank = {str(sym): i + 1 for i, sym in enumerate(candidate_symbols)}
     eligible_set = {str(sym) for sym in eligible_symbols}
@@ -624,6 +811,23 @@ def _build_decision_records(
         "trade_status_filter_enabled": False,
         "trade_status_missing_data": False,
     }
+    industry_target_map = industry_target_map or {}
+    volatility_target_map = volatility_target_map or {}
+    volatility_target_meta = volatility_target_meta or {
+        "volatility_target_enabled": False,
+        "target_volatility": 0.0,
+        "portfolio_estimated_volatility": float("nan"),
+        "volatility_target_scale": 1.0,
+        "cash_target_weight": 0.0,
+        "volatility_target_applied": False,
+        "volatility_target_missing_data": False,
+    }
+    industry_by_symbol = industry_by_symbol or {}
+    industry_cap_meta = industry_cap_meta or {
+        "industry_cap_enabled": False,
+        "max_industry_weight": 0.0,
+        "industry_missing_data": False,
+    }
     for sym in all_symbols:
         ss = str(sym)
         if ss in seen:
@@ -631,6 +835,8 @@ def _build_decision_records(
         seen.add(ss)
         prev_w = float(previous_target_map.get(ss, 0.0) or 0.0)
         raw_w = float(raw_target_map.get(ss, 0.0) or 0.0)
+        industry_w = float(industry_target_map.get(ss, raw_w) or 0.0)
+        vol_w = float(volatility_target_map.get(ss, industry_w) or 0.0)
         final_w = float(final_target_map.get(ss, 0.0) or 0.0)
         in_candidate = ss in candidate_rank
         passed_liquidity = ss in eligible_set if in_candidate else False
@@ -657,6 +863,8 @@ def _build_decision_records(
                 "is_limit_down": bool(status.get("is_limit_down", False)),
                 "trade_blocked": bool(trade_block_reason),
                 "trade_block_reason": trade_block_reason,
+                "industry": industry_by_symbol.get(ss, ""),
+                "industry_cap_applied": bool(industry_cap_applied),
                 "action": _decision_action(prev_w, final_w),
                 "decision_reason": _decision_reason(
                     in_candidate=in_candidate,
@@ -669,11 +877,18 @@ def _build_decision_records(
                     turnover_capped=turnover_capped,
                     liquidity_enabled=liquidity_enabled,
                     trade_block_reason=trade_block_reason,
+                    industry_cap_adjusted=bool(industry_cap_applied and abs(industry_w - raw_w) > 1e-9),
+                    volatility_target_scaled=bool(
+                        volatility_target_meta.get("volatility_target_applied", False)
+                        and abs(vol_w - industry_w) > 1e-9
+                    ),
                 ),
                 "n_candidates_before_liquidity": int(len(candidate_symbols)),
                 "n_candidates_after_liquidity": int(len(eligible_symbols)),
                 **liquidity_meta,
                 **trade_status_meta,
+                **industry_cap_meta,
+                **volatility_target_meta,
             }
         )
     return rows
@@ -786,6 +1001,13 @@ def run_single_backtest(
     if trade_status_data is None:
         trade_status_data = kwargs.get("long_prices")
     suspended_wide, limit_up_wide, limit_down_wide = _trade_status_wide_frames(trade_status_data)
+    industry_data = kwargs.get("industry_data")
+    if industry_data is None:
+        industry_data = kwargs.get("long_prices")
+    industry_wide = _industry_wide_from_long(
+        industry_data,
+        str(getattr(settings, "industry_col", "industry") or "industry"),
+    )
 
     if factor_values is None:
         if factor_name not in FACTOR_REGISTRY:
@@ -889,6 +1111,12 @@ def run_single_backtest(
             amount_wide,
         )
         status_symbols = list(dict.fromkeys(candidate_symbols + list(prev_target_weights.keys())))
+        industry_by_symbol, industry_cap_meta = _industry_map_for_symbols(
+            status_symbols,
+            pd.Timestamp(dt),
+            settings,
+            industry_wide,
+        )
         trade_status_by_symbol, trade_status_meta = _trade_status_for_symbols(
             status_symbols,
             pd.Timestamp(dt),
@@ -921,6 +1149,8 @@ def run_single_backtest(
                         "n_candidates_before_liquidity": int(len(candidate_symbols)),
                         "n_candidates_after_liquidity": int(len(eligible_symbols)),
                         **liquidity_meta,
+                        **trade_status_meta,
+                        **industry_cap_meta,
                     }
                 )
                 decision_log.extend(
@@ -939,6 +1169,9 @@ def run_single_backtest(
                         trade_status_by_symbol=trade_status_by_symbol,
                         trade_block_reasons={},
                         trade_status_meta=trade_status_meta,
+                        industry_by_symbol=industry_by_symbol,
+                        industry_cap_meta=industry_cap_meta,
+                        industry_cap_applied=False,
                     )
                 )
             continue
@@ -946,10 +1179,20 @@ def run_single_backtest(
         selected_picks = list(picks)
         pick_weights, w_label = _weights_for_rebalance(prices_wide, selected_picks, dt, settings)
         raw_target_map = _target_weight_map(selected_picks, pick_weights)
-        target_map = dict(raw_target_map)
+        industry_target_map, industry_cap_applied, industry_exposure = _apply_industry_weight_cap(
+            raw_target_map,
+            industry_by_symbol,
+            float(getattr(settings, "max_industry_weight", 0.0) or 0.0),
+        )
+        volatility_target_map, volatility_target_meta = _apply_volatility_target(
+            industry_target_map,
+            prices_wide,
+            pd.Timestamp(dt),
+            settings,
+        )
         target_map, turnover_capped, target_turnover, turnover_scale = _apply_rebalance_turnover_cap(
             prev_target_weights,
-            target_map,
+            volatility_target_map,
             float(getattr(settings, "max_rebalance_turnover", 0.0) or 0.0),
         )
         if turnover_capped:
@@ -979,8 +1222,14 @@ def run_single_backtest(
                         "n_candidates_before_liquidity": int(len(candidate_symbols)),
                         "n_candidates_after_liquidity": int(len(eligible_symbols)),
                         "n_trade_blocked": int(len(trade_block_reasons)),
+                        "industry_cap_applied": bool(industry_cap_applied),
+                        "max_industry_exposure": float(max(industry_exposure.values())) if industry_exposure else 0.0,
+                        "n_industries": int(len(industry_exposure)),
                         **liquidity_meta,
                         **trade_status_meta,
+                        **industry_cap_meta,
+                        **volatility_target_meta,
+                        "cash_target_weight": 1.0,
                     }
                 )
                 decision_log.extend(
@@ -991,6 +1240,9 @@ def run_single_backtest(
                         eligible_symbols=eligible_symbols,
                         selected_picks=selected_picks,
                         raw_target_map=raw_target_map,
+                        industry_target_map=industry_target_map,
+                        volatility_target_map=volatility_target_map,
+                        volatility_target_meta=volatility_target_meta,
                         final_target_map={},
                         previous_target_map=prev_target_weights,
                         weighting="no_trade_status",
@@ -999,6 +1251,9 @@ def run_single_backtest(
                         trade_status_by_symbol=trade_status_by_symbol,
                         trade_block_reasons=trade_block_reasons,
                         trade_status_meta=trade_status_meta,
+                        industry_by_symbol=industry_by_symbol,
+                        industry_cap_meta=industry_cap_meta,
+                        industry_cap_applied=industry_cap_applied,
                     )
                 )
             continue
@@ -1020,8 +1275,14 @@ def run_single_backtest(
                 "n_candidates_before_liquidity": int(len(candidate_symbols)),
                 "n_candidates_after_liquidity": int(len(eligible_symbols)),
                 "n_trade_blocked": int(len(trade_block_reasons)),
+                "industry_cap_applied": bool(industry_cap_applied),
+                "max_industry_exposure": float(max(industry_exposure.values())) if industry_exposure else 0.0,
+                "n_industries": int(len(industry_exposure)),
                 **liquidity_meta,
                 **trade_status_meta,
+                **industry_cap_meta,
+                **volatility_target_meta,
+                "cash_target_weight": max(0.0, 1.0 - float(sum(target_weights))),
             }
         )
         final_target_map = dict(zip(target_picks, [float(x) for x in target_weights]))
@@ -1033,6 +1294,9 @@ def run_single_backtest(
                 eligible_symbols=eligible_symbols,
                 selected_picks=selected_picks,
                 raw_target_map=raw_target_map,
+                industry_target_map=industry_target_map,
+                volatility_target_map=volatility_target_map,
+                volatility_target_meta=volatility_target_meta,
                 final_target_map=final_target_map,
                 previous_target_map=prev_target_weights,
                 weighting=w_label,
@@ -1041,6 +1305,9 @@ def run_single_backtest(
                 trade_status_by_symbol=trade_status_by_symbol,
                 trade_block_reasons=trade_block_reasons,
                 trade_status_meta=trade_status_meta,
+                industry_by_symbol=industry_by_symbol,
+                industry_cap_meta=industry_cap_meta,
+                industry_cap_applied=industry_cap_applied,
             )
         )
         prev_target_weights = final_target_map
@@ -1062,6 +1329,8 @@ def run_single_backtest(
         "max_position_weight": getattr(settings, "max_position_weight", 0.0),
         "max_rebalance_turnover": getattr(settings, "max_rebalance_turnover", 0.0),
         "enable_trade_status_filter": getattr(settings, "enable_trade_status_filter", False),
+        "max_industry_weight": getattr(settings, "max_industry_weight", 0.0),
+        "target_volatility": getattr(settings, "target_volatility", 0.0),
         "rebalance_log": rebalance_log,
         "decision_log": decision_log,
     }
