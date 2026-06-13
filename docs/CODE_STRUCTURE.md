@@ -60,7 +60,7 @@ flowchart LR
 
 | 文件 | 作用 |
 |------|------|
-| `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、单票/行业/波动率/换手约束、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
+| `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、单票/行业/波动率/最小持仓/换手约束、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
 | `main.py` | **MVP 程序入口**：拉数 → 多因子面板 → 数据质量报告 → 可选落盘 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 / 训练段权重 / 滚动权重日志 → 可选 IC CSV 与图 → 多列单因子回测（内部可做可交易性 / 流动性过滤与决策审计）→ **IC 列权或等权**融合 / **训练段静态综合权重**融合 / **调仓日前滚动综合权重**融合 → `run_multi_backtest`（同样复用过滤与审计）→ 股票池等权基准与超额收益 → 换手率与预估成本 → 风险暴露与集中度 → 净值/超额净值/IC/权重/换手/集中度/覆盖率图。复杂逻辑在子包中实现。 |
 | `requirements.txt` | **Python 依赖**列表，供虚拟环境一键安装。 |
 | `README.md` | 快速开始、目录总览、文档索引。 |
@@ -101,7 +101,7 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `backtest_utils.py` | **公共工具**：价格 ↔ 收益、长表 ↔ 宽表、因子与行情对齐等。避免在 `backtest_single` 与 `backtest_multi` 里重复写 pivot/stack、对齐索引。 |
-| `backtest_single.py` | **单因子回测**：给定因子名（查注册表）或已算好的因子序列，执行分层/Top-K、Top-K 前可交易性 / 流动性过滤、停牌 / 涨跌停交易约束、再平衡、交易成本、单票权重上限、行业权重上限、波动率目标与现金仓位、单次换手上限等，输出**净值序列**及可选元信息（换手、持仓、过滤前后候选数、行业暴露、目标波动缩放、逐股票决策审计日志）。 |
+| `backtest_single.py` | **单因子回测**：给定因子名（查注册表）或已算好的因子序列，执行分层/Top-K、Top-K 前可交易性 / 流动性过滤、停牌 / 涨跌停交易约束、再平衡、交易成本、单票权重上限、行业权重上限、波动率目标与现金仓位、最小持仓数量、单次换手上限等，输出**净值序列**及可选元信息（换手、持仓、过滤前后候选数、行业暴露、目标波动缩放、最小持仓检查、逐股票决策审计日志）。 |
 | `backtest_multi.py` | **多因子回测入口**：`run_multi_backtest(fused=...)` 将已融合的一列得分交给 `run_single_backtest`；或 `run_multi_backtest(factors, weights=...)` 先做**列线性加权**再回测。`main` 中融合路径使用前者。 |
 
 **本层**是「策略逻辑 + 时间轴 + 约束」的核心实现处之一；`models` 产出的权重或得分通常在这里被消费。
@@ -163,7 +163,7 @@ flowchart LR
 
 ## 10. 阅读与改代码的顺序建议
 
-1. `config.py` → 路径、费率、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`max_rebalance_turnover`、IC 与优化窗口等。
+1. `config.py` → 路径、费率、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`min_positions`、`max_rebalance_turnover`、IC 与优化窗口等。
 2. `docs/FLOW_AND_MODULES.md` 或 `ENGINEERING_OVERVIEW.md` → 主流程。  
 3. `factors/panel_builder.py` + `backtest/backtest_utils.py` → 面板与对齐。  
 4. `backtest/backtest_single.py` → 单策略闭环（含 Top-K 与等权 / 夏普 / 风险平价）。  

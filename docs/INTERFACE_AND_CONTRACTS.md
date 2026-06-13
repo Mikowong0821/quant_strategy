@@ -86,7 +86,7 @@
 | `factors.preprocess` | `winsorize_series`、`cross_sectional_zscore`、`preprocess_factor_panel` | 原始因子面板 | 清洗后的横截面 z-score 面板 |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
-| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、可选 `long_prices` / `liquidity_data` / `trade_status_data` / `industry_data`、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`）、`Settings.max_position_weight`、`Settings.max_industry_weight` / `industry_col`、`Settings.target_volatility`、`Settings.max_rebalance_turnover`、`Settings.min_avg_volume` / `min_avg_amount`、`Settings.enable_trade_status_filter` | `NavSeries` + `meta`（含 `rebalance_log`；含 `decision_log`：逐股票 `factor_score/factor_rank/passed_liquidity_filter/selected_by_signal/industry/industry_cap_applied/volatility_target_applied/is_suspended/is_limit_up/is_limit_down/trade_block_reason/previous_weight/raw_target_weight/final_target_weight/action/decision_reason` 等） |
+| `backtest.backtest_single` | `run_single_backtest(factor_name, ...)` | `factor_name` 或预计算因子、可选 `long_prices` / `liquidity_data` / `trade_status_data` / `industry_data`、`Settings.portfolio_weighting`（`equal` / `max_sharpe` / `risk_parity`）、`Settings.max_position_weight`、`Settings.max_industry_weight` / `industry_col`、`Settings.target_volatility`、`Settings.min_positions`、`Settings.max_rebalance_turnover`、`Settings.min_avg_volume` / `min_avg_amount`、`Settings.enable_trade_status_filter` | `NavSeries` + `meta`（含 `rebalance_log`；含 `decision_log`：逐股票 `factor_score/factor_rank/passed_liquidity_filter/selected_by_signal/industry/industry_cap_applied/volatility_target_applied/min_positions_applied/is_suspended/is_limit_up/is_limit_down/trade_block_reason/previous_weight/raw_target_weight/final_target_weight/action/decision_reason` 等） |
 | `backtest.backtest_multi` | `run_multi_backtest(fused=..., prices=...)` 或 `run_multi_backtest(factors, weights=..., prices=...)` | 已融合得分 **或** 多列因子 + 线性权重 | `NavSeries` + `meta`（含 `multi_mode`：`pre_fused` / `linear_weight`） |
 | `models.optimizer` | `maximize_sharpe` / `risk_parity` | `mu`、`cov` 与标的顺序一致（`risk_parity` 仅需 `cov`） | 权重向量；`maximize_sharpe` / `risk_parity` 在对应 `portfolio_weighting` 时由回测于再平衡日调用 |
 | `models.fusion` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_static_weight_zscore`、`fuse_models(...)` | 多列因子 Panel；`fuse_ic` 另需各列日 IC `Series`；静态融合另需 `{factor: weight}` | 单列综合得分 `PanelLong` |
@@ -111,8 +111,9 @@
 3. **流动性过滤**：若 `min_avg_volume` / `min_avg_amount` 为正，回测会在 Top-K 前使用 `long_prices` / `liquidity_data` 中的 `volume`、`amount` 或 `turnover` 字段计算过去窗口均值；缺少对应数据时该期无法通过该过滤。
 4. **行业权重约束**：若 `max_industry_weight` 在 `(0, 1)`，回测会读取 `long_prices` / `industry_data` 中 `industry_col` 指定的列（默认 `industry`），用调仓日之前最近可用行业分类限制单个行业目标权重。缺少行业数据时记录 `industry_missing_data`，单票行业缺失时记为 `UNKNOWN`。
 5. **波动率目标**：若 `target_volatility > 0`，回测会使用调仓日及之前的价格收益协方差估算组合年化波动。若估算值超过目标，则按比例降低股票目标仓位，剩余仓位作为现金；缺少足够历史样本时记录 `volatility_target_missing_data` 并保留原目标权重。
-6. **交易状态约束**：若 `enable_trade_status_filter=True`，回测会读取 `is_suspended` / `is_limit_up` / `is_limit_down`。停牌不能买卖，涨停不能买入 / 加仓，跌停不能卖出 / 减仓；缺少字段时默认不阻断但会记录 `trade_status_missing_data`。
-7. **未来函数**：因子 `calc_*` 的输出在日期 `t` 必须**仅依赖 ≤ t 的公开数据**；标签（供 fusion 中 ML 使用）在单独函数中计算，**不得**与因子同文件混写而不标注。
+6. **最小持仓数量**：若 `min_positions > 0` 且有效目标持仓数少于阈值，回测会把股票总仓位缩到 `min_positions_exposure`，剩余保留现金。该规则用于避免候选数不足、过滤过严或交易受限时硬满仓。
+7. **交易状态约束**：若 `enable_trade_status_filter=True`，回测会读取 `is_suspended` / `is_limit_up` / `is_limit_down`。停牌不能买卖，涨停不能买入 / 加仓，跌停不能卖出 / 减仓；缺少字段时默认不阻断但会记录 `trade_status_missing_data`。
+8. **未来函数**：因子 `calc_*` 的输出在日期 `t` 必须**仅依赖 ≤ t 的公开数据**；标签（供 fusion 中 ML 使用）在单独函数中计算，**不得**与因子同文件混写而不标注。
 
 ---
 
@@ -134,6 +135,7 @@
 | `industry_col` | 行业分类字段名；默认 `industry`，可来自 `long_prices` 或 `industry_data` |
 | `target_volatility` | 组合目标年化波动；默认 `0` 表示关闭，开启后只在估算波动超目标时降低股票仓位 |
 | `volatility_target_lookback_days` / `volatility_target_min_obs` | 目标波动估算使用的历史收益窗口和最少样本数 |
+| `min_positions` / `min_positions_exposure` | 最小有效目标持仓数；不足时把股票总仓位缩到该 exposure，剩余保留现金 |
 | `max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，首次建仓不节流，`0` 表示关闭 |
 | `liquidity_lookback_days` | 可交易性过滤使用的成交量 / 成交额均值窗口 |
 | `min_avg_volume` / `min_avg_amount` | Top-K 前的最小平均成交量 / 成交额过滤；默认 `0` 表示关闭 |

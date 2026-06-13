@@ -2,8 +2,9 @@
 单因子回测。契约：输入因子名或预计算 PanelLong，输出 NavSeries + 元信息。
 
 月末调仓、Top-K 多头、收盘价成交、单边手续费；持仓权重见 config.portfolio_weighting（equal / max_sharpe / risk_parity）。
-若 config.max_position_weight / max_industry_weight / target_volatility / max_rebalance_turnover 可行，
-会在目标权重生成后限制单票、行业、组合波动与单次换手。
+若 config.max_position_weight / max_industry_weight / target_volatility / min_positions
+/ max_rebalance_turnover 可行，会在目标权重生成后限制单票、行业、组合波动、
+最低分散度与单次换手。
 """
 from __future__ import annotations
 
@@ -298,6 +299,38 @@ def _apply_rebalance_turnover_cap(
             capped[sym] = float(w)
     total = float(sum(capped.values()))
     return capped, True, turnover, scale
+
+
+def _apply_min_positions_rule(
+    target: Dict[str, float],
+    settings: Settings,
+) -> tuple[Dict[str, float], dict[str, Any]]:
+    min_pos = int(getattr(settings, "min_positions", 0) or 0)
+    exposure = float(getattr(settings, "min_positions_exposure", 1.0) or 1.0)
+    enabled = min_pos > 0
+    clean = {str(k): float(v) for k, v in target.items() if float(v) > 1e-12}
+    n_pos = int(len(clean))
+    exposure = max(0.0, min(1.0, exposure)) if np.isfinite(exposure) else 1.0
+    meta: dict[str, Any] = {
+        "min_positions_enabled": bool(enabled),
+        "min_positions": min_pos,
+        "min_positions_actual": n_pos,
+        "min_positions_exposure": exposure,
+        "min_positions_applied": False,
+        "cash_target_weight": max(0.0, 1.0 - float(sum(clean.values()))),
+    }
+    if not enabled or not clean or n_pos >= min_pos:
+        return clean, meta
+
+    current_sum = float(sum(clean.values()))
+    if current_sum <= 1e-12:
+        return {}, meta
+    target_sum = min(current_sum, exposure)
+    scale = max(0.0, min(1.0, target_sum / current_sum))
+    scaled = {sym: w * scale for sym, w in clean.items() if w * scale > 1e-12}
+    meta["min_positions_applied"] = True
+    meta["cash_target_weight"] = max(0.0, 1.0 - float(sum(scaled.values())))
+    return scaled, meta
 
 
 def _turnover_cap_label(label: str) -> str:
@@ -651,14 +684,14 @@ def _apply_trade_status_constraints(
             flexible[sym] = tgt_w
 
     fixed_sum = float(sum(fixed.values()))
-    if fixed_sum >= 1.0 - 1e-12:
-        total = fixed_sum
-        return ({k: v / total for k, v in fixed.items()}, blocked, bool(blocked))
+    target_sum = min(1.0, max(float(sum(clean_target.values())), fixed_sum))
+    if fixed_sum >= target_sum - 1e-12:
+        return ({k: v for k, v in fixed.items() if v > 1e-12}, blocked, bool(blocked))
 
     flex_sum = float(sum(flexible.values()))
     out = dict(fixed)
     if flex_sum > 1e-12:
-        remain = 1.0 - fixed_sum
+        remain = max(target_sum - fixed_sum, 0.0)
         for sym, w in flexible.items():
             out[sym] = float(w) / flex_sum * remain
     return ({k: v for k, v in out.items() if v > 1e-12}, blocked, bool(blocked))
@@ -739,6 +772,7 @@ def _decision_reason(
     trade_block_reason: str,
     industry_cap_adjusted: bool,
     volatility_target_scaled: bool,
+    min_positions_scaled: bool,
 ) -> str:
     eps = 1e-9
     if in_candidate and liquidity_enabled and not passed_liquidity:
@@ -755,6 +789,8 @@ def _decision_reason(
             reasons.append("industry_cap_adjusted")
         if volatility_target_scaled and abs(final_target_weight - raw_target_weight) > eps:
             reasons.append("volatility_target_scaled")
+        if min_positions_scaled and abs(final_target_weight - raw_target_weight) > eps:
+            reasons.append("min_positions_scaled")
         if trade_block_reason:
             reasons.append(trade_block_reason)
         return "|".join(reasons)
@@ -787,6 +823,8 @@ def _build_decision_records(
     industry_target_map: Dict[str, float] | None = None,
     volatility_target_map: Dict[str, float] | None = None,
     volatility_target_meta: dict[str, Any] | None = None,
+    min_positions_target_map: Dict[str, float] | None = None,
+    min_positions_meta: dict[str, Any] | None = None,
     trade_status_by_symbol: dict[str, dict[str, bool]] | None = None,
     trade_block_reasons: dict[str, str] | None = None,
     trade_status_meta: dict[str, Any] | None = None,
@@ -822,6 +860,15 @@ def _build_decision_records(
         "volatility_target_applied": False,
         "volatility_target_missing_data": False,
     }
+    min_positions_target_map = min_positions_target_map or {}
+    min_positions_meta = min_positions_meta or {
+        "min_positions_enabled": False,
+        "min_positions": 0,
+        "min_positions_actual": 0,
+        "min_positions_exposure": 1.0,
+        "min_positions_applied": False,
+        "cash_target_weight": float(volatility_target_meta.get("cash_target_weight", 0.0) or 0.0),
+    }
     industry_by_symbol = industry_by_symbol or {}
     industry_cap_meta = industry_cap_meta or {
         "industry_cap_enabled": False,
@@ -837,6 +884,7 @@ def _build_decision_records(
         raw_w = float(raw_target_map.get(ss, 0.0) or 0.0)
         industry_w = float(industry_target_map.get(ss, raw_w) or 0.0)
         vol_w = float(volatility_target_map.get(ss, industry_w) or 0.0)
+        minpos_w = float(min_positions_target_map.get(ss, vol_w) or 0.0)
         final_w = float(final_target_map.get(ss, 0.0) or 0.0)
         in_candidate = ss in candidate_rank
         passed_liquidity = ss in eligible_set if in_candidate else False
@@ -882,6 +930,10 @@ def _build_decision_records(
                         volatility_target_meta.get("volatility_target_applied", False)
                         and abs(vol_w - industry_w) > 1e-9
                     ),
+                    min_positions_scaled=bool(
+                        min_positions_meta.get("min_positions_applied", False)
+                        and abs(minpos_w - vol_w) > 1e-9
+                    ),
                 ),
                 "n_candidates_before_liquidity": int(len(candidate_symbols)),
                 "n_candidates_after_liquidity": int(len(eligible_symbols)),
@@ -889,6 +941,7 @@ def _build_decision_records(
                 **trade_status_meta,
                 **industry_cap_meta,
                 **volatility_target_meta,
+                **min_positions_meta,
             }
         )
     return rows
@@ -1190,9 +1243,13 @@ def run_single_backtest(
             pd.Timestamp(dt),
             settings,
         )
+        min_positions_target_map, min_positions_meta = _apply_min_positions_rule(
+            volatility_target_map,
+            settings,
+        )
         target_map, turnover_capped, target_turnover, turnover_scale = _apply_rebalance_turnover_cap(
             prev_target_weights,
-            volatility_target_map,
+            min_positions_target_map,
             float(getattr(settings, "max_rebalance_turnover", 0.0) or 0.0),
         )
         if turnover_capped:
@@ -1229,6 +1286,7 @@ def run_single_backtest(
                         **trade_status_meta,
                         **industry_cap_meta,
                         **volatility_target_meta,
+                        **min_positions_meta,
                         "cash_target_weight": 1.0,
                     }
                 )
@@ -1243,6 +1301,8 @@ def run_single_backtest(
                         industry_target_map=industry_target_map,
                         volatility_target_map=volatility_target_map,
                         volatility_target_meta=volatility_target_meta,
+                        min_positions_target_map=min_positions_target_map,
+                        min_positions_meta=min_positions_meta,
                         final_target_map={},
                         previous_target_map=prev_target_weights,
                         weighting="no_trade_status",
@@ -1282,6 +1342,7 @@ def run_single_backtest(
                 **trade_status_meta,
                 **industry_cap_meta,
                 **volatility_target_meta,
+                **min_positions_meta,
                 "cash_target_weight": max(0.0, 1.0 - float(sum(target_weights))),
             }
         )
@@ -1297,6 +1358,8 @@ def run_single_backtest(
                 industry_target_map=industry_target_map,
                 volatility_target_map=volatility_target_map,
                 volatility_target_meta=volatility_target_meta,
+                min_positions_target_map=min_positions_target_map,
+                min_positions_meta=min_positions_meta,
                 final_target_map=final_target_map,
                 previous_target_map=prev_target_weights,
                 weighting=w_label,
@@ -1331,6 +1394,7 @@ def run_single_backtest(
         "enable_trade_status_filter": getattr(settings, "enable_trade_status_filter", False),
         "max_industry_weight": getattr(settings, "max_industry_weight", 0.0),
         "target_volatility": getattr(settings, "target_volatility", 0.0),
+        "min_positions": getattr(settings, "min_positions", 0),
         "rebalance_log": rebalance_log,
         "decision_log": decision_log,
     }

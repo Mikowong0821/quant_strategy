@@ -72,6 +72,9 @@ class Settings:
     target_volatility: float = 0.0
     volatility_target_lookback_days: int = 60
     volatility_target_min_obs: int = 20
+    # 最小持仓数量：0 表示关闭；若有效目标持仓数不足，则把股票总仓位缩到 min_positions_exposure，剩余保留现金。
+    min_positions: int = 0
+    min_positions_exposure: float = 1.0
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 

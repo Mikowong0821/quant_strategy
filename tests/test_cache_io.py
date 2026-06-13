@@ -135,6 +135,11 @@ class TestExperimentOutputs(unittest.TestCase):
                     "cash_target_weight",
                     "volatility_target_applied",
                     "volatility_target_missing_data",
+                    "min_positions_enabled",
+                    "min_positions",
+                    "min_positions_actual",
+                    "min_positions_exposure",
+                    "min_positions_applied",
                 ],
             )
             self.assertEqual(list(log_df["symbol"]), ["AAA", "BBB"])
@@ -211,6 +216,11 @@ class TestExperimentOutputs(unittest.TestCase):
                     "cash_target_weight",
                     "volatility_target_applied",
                     "volatility_target_missing_data",
+                    "min_positions_enabled",
+                    "min_positions",
+                    "min_positions_actual",
+                    "min_positions_exposure",
+                    "min_positions_applied",
                 ],
             )
             self.assertEqual(str(decision_df.loc[0, "decision_reason"]), "selected_topk")

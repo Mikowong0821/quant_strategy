@@ -368,5 +368,99 @@ class TestVolatilityTarget(unittest.TestCase):
         self.assertIn("volatility_target_scaled", selected[0]["decision_reason"])
 
 
+class TestMinPositionsRule(unittest.TestCase):
+    def test_min_positions_scales_exposure_to_cash(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=45)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(10.0, 11.0, len(days)),
+                "BBB": np.linspace(10.0, 10.5, len(days)),
+            },
+            index=days,
+        )
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB"]], names=["date", "symbol"])
+        factor = pd.Series(1.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 2.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=2,
+            min_positions=3,
+            min_positions_exposure=0.5,
+            max_rebalance_turnover=0.0,
+        )
+        _, meta = run_single_backtest(
+            "TEST_MIN_POSITIONS",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+        )
+        log = [rec for rec in (meta.get("rebalance_log") or []) if rec.get("picks")]
+        self.assertGreater(len(log), 0)
+        first = log[0]
+        self.assertTrue(first["min_positions_applied"])
+        self.assertEqual(first["min_positions_actual"], 2)
+        self.assertAlmostEqual(sum(first["weights"]), 0.5)
+        self.assertAlmostEqual(first["cash_target_weight"], 0.5)
+
+        decision_log = meta.get("decision_log") or []
+        selected = [rec for rec in decision_log if rec.get("symbol") == "AAA" and rec.get("selected_by_signal")]
+        self.assertGreater(len(selected), 0)
+        self.assertIn("min_positions_scaled", selected[0]["decision_reason"])
+
+    def test_trade_status_keeps_cash_target_weight(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=45)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(10.0, 11.0, len(days)),
+                "BBB": np.linspace(10.0, 10.5, len(days)),
+            },
+            index=days,
+        )
+        first_rebalance = prices.resample("ME").last().index.intersection(prices.index)[0]
+        long_rows = []
+        for dt in days:
+            for sym in ["AAA", "BBB"]:
+                long_rows.append(
+                    {
+                        "trade_date": dt,
+                        "ts_code": sym,
+                        "close": prices.loc[dt, sym],
+                        "volume": 5000.0,
+                        "is_limit_up": bool(dt == first_rebalance and sym == "AAA"),
+                        "is_limit_down": False,
+                        "is_suspended": False,
+                    }
+                )
+        long_df = pd.DataFrame(long_rows)
+        idx = pd.MultiIndex.from_product([days, ["AAA", "BBB"]], names=["date", "symbol"])
+        factor = pd.Series(1.0, index=idx)
+        factor.loc[(slice(None), "AAA")] = 2.0
+
+        settings = replace(
+            get_settings(),
+            portfolio_weighting="equal",
+            top_k=2,
+            min_positions=3,
+            min_positions_exposure=0.5,
+            enable_trade_status_filter=True,
+            max_rebalance_turnover=0.0,
+        )
+        _, meta = run_single_backtest(
+            "TEST_STATUS_WITH_CASH",
+            factor_values=factor,
+            prices=prices,
+            settings=settings,
+            long_prices=long_df,
+        )
+        log = [rec for rec in (meta.get("rebalance_log") or []) if rec.get("picks")]
+        self.assertGreater(len(log), 0)
+        first = log[0]
+        self.assertEqual(first["picks"], ["BBB"])
+        self.assertAlmostEqual(sum(first["weights"]), 0.5)
+        self.assertAlmostEqual(first["cash_target_weight"], 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -175,6 +175,11 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
                     "cash_target_weight": rec.get("cash_target_weight", ""),
                     "volatility_target_applied": rec.get("volatility_target_applied", ""),
                     "volatility_target_missing_data": rec.get("volatility_target_missing_data", ""),
+                    "min_positions_enabled": rec.get("min_positions_enabled", ""),
+                    "min_positions": rec.get("min_positions", ""),
+                    "min_positions_actual": rec.get("min_positions_actual", ""),
+                    "min_positions_exposure": rec.get("min_positions_exposure", ""),
+                    "min_positions_applied": rec.get("min_positions_applied", ""),
                 }
             )
     return pd.DataFrame(
@@ -213,6 +218,11 @@ def _rebalance_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
             "cash_target_weight",
             "volatility_target_applied",
             "volatility_target_missing_data",
+            "min_positions_enabled",
+            "min_positions",
+            "min_positions_actual",
+            "min_positions_exposure",
+            "min_positions_applied",
         ],
     )
 
@@ -264,6 +274,11 @@ def _decision_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
                 "cash_target_weight": rec.get("cash_target_weight", ""),
                 "volatility_target_applied": rec.get("volatility_target_applied", ""),
                 "volatility_target_missing_data": rec.get("volatility_target_missing_data", ""),
+                "min_positions_enabled": rec.get("min_positions_enabled", ""),
+                "min_positions": rec.get("min_positions", ""),
+                "min_positions_actual": rec.get("min_positions_actual", ""),
+                "min_positions_exposure": rec.get("min_positions_exposure", ""),
+                "min_positions_applied": rec.get("min_positions_applied", ""),
             }
         )
     return pd.DataFrame(
@@ -309,6 +324,11 @@ def _decision_log_to_frame(log: list[dict[str, Any]]) -> pd.DataFrame:
             "cash_target_weight",
             "volatility_target_applied",
             "volatility_target_missing_data",
+            "min_positions_enabled",
+            "min_positions",
+            "min_positions_actual",
+            "min_positions_exposure",
+            "min_positions_applied",
         ],
     )
 
