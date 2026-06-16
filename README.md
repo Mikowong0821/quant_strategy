@@ -1,6 +1,6 @@
 # Quant Strategy（MVP）
 
-模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 融合回测（IC 滚动列权 + 训练段静态综合权重 + 调仓日前滚动综合权重）→ 可交易性 / 流动性过滤 → 回测（Top-K + 等权 / 夏普 / 风险平价）→ 单票 / 行业 / 波动率 / 最小持仓约束 → 决策审计日志 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与作图 → 实验记录落盘 → 目标权重转订单计划 → 订单预检查 → 纸面交易 → 账户状态持久化**。
+模块化量化研究项目：**数据 → 因子面板 → 数据质量 → IC → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 融合回测（IC 滚动列权 + 训练段静态综合权重 + 调仓日前滚动综合权重）→ 可交易性 / 流动性过滤 → 回测（Top-K + 等权 / 夏普 / 风险平价）→ 单票 / 行业 / 波动率 / 最小持仓约束 → 决策审计日志 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与作图 → 实验记录落盘 → 目标权重转订单计划 → 订单预检查 → 纸面交易 → 账户状态持久化 → 每日纸面交易运行器 → 日终纸面交易脚本**。
 
 **文档与代码**：以 `main.py` 与 `config.Settings` 为准；更新行为后请同步修改 `docs/ENGINEERING_OVERVIEW.md`、`docs/FLOW_AND_MODULES.md` 及本 README 相关段落（仓库无自动文档校验）。
 
@@ -10,10 +10,10 @@
 
 | 在 MVP 内 | 不在 MVP 内（后续扩展） |
 |------------|-------------------------|
-| 行情接入（CSV / Tushare / 合成兜底）、多因子面板（量价 + 财务）、数据质量 / 覆盖率报告、IC 与可选 CSV/图、因子 Top-K 多头超额诊断、分组收益与单调性分析、多因子权重建议表 | `live/signal_system.generate_signals`、`live/paper_trading.run_paper_trading`（仅占位） |
+| 行情接入（CSV / Tushare / 合成兜底）、多因子面板（量价 + 财务）、数据质量 / 覆盖率报告、IC 与可选 CSV/图、因子 Top-K 多头超额诊断、分组收益与单调性分析、多因子权重建议表 | `live/signal_system.generate_signals`、真实券商 API、每日自动调度 |
 | 月末再平衡、Top-K、可交易性 / 流动性过滤、停牌 / 涨跌停交易约束、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity`，`max_position_weight` 单票权重上限，`max_industry_weight` 行业权重上限，`target_volatility` 波动率目标与现金仓位，`min_positions` 最小持仓数量，`max_rebalance_turnover` 单次换手上限 | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
 | 单因子回测 + **IC 驱动或等权** z-score 融合回测 + **训练段静态综合权重**验证回测 + **调仓日前滚动综合权重**回测、`meta["rebalance_log"]`、`meta["decision_log"]` | `main` 未接 `run_multi_backtest(factors, weights)` 原始因子线性加权入口（代码已有，非主流程） |
-| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/决策审计/换手/集中度日志 CSV、`persist_run_outputs` 落盘、`live.order_builder` 目标权重转订单计划、`live.order_precheck` 订单预检查、`live.paper_trading` 虚拟账户模拟成交、`live.account_state` 纸面账户状态持久化 | 真实券商 API、实时风控与订单路由、每日自动调度 |
+| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/决策审计/换手/集中度日志 CSV、`persist_run_outputs` 落盘、`live.order_builder` 目标权重转订单计划、`live.order_precheck` 订单预检查、`live.paper_trading` 虚拟账户模拟成交、`live.account_state` 纸面账户状态持久化、`live.paper_runner` 单日纸面交易运行器、`scripts/run_daily_paper.py` 日终纸面交易脚本 | 真实券商 API、实时风控与订单路由、定时任务编排 |
 
 ## 文档
 
@@ -44,7 +44,8 @@ factors/        # 因子与 panel_builder
 backtest/       # backtest_single、backtest_multi、utils
 models/         # fusion、factor_weighting、optimizer
 analysis/       # performance、benchmark、turnover、risk_exposure、data_quality、plotting、ic
-live/           # data_feed、cache_io、order_builder、order_precheck、paper_trading、account_state；signal 非 MVP 占位
+live/           # data_feed、cache_io、order_builder、order_precheck、paper_trading、account_state、paper_runner、daily_paper_cli；signal 非 MVP 占位
+scripts/        # run_daily_paper.py 等日常运行入口
 config.py
 main.py
 ```
@@ -80,6 +81,27 @@ python main.py
 21. **订单预检查**：`live.order_precheck` 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨停买入 / 跌停卖出检查；`live.cache_io.save_order_checks` 可保存到 `output/order_checks/*.csv`。该层只输出 `PASS/BLOCK` 和原因，不修改订单。
 22. **纸面交易**：`live.paper_trading` 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、现金变化、持仓变化与原因；`live.cache_io.save_paper_trades` 可保存到 `output/paper_trades/*.csv`。
 23. **纸面账户状态**：`live.account_state` 保存 / 读取纸面账户现金、持仓和每日快照，输出到 `output/paper_account/<strategy>/account.csv`、`positions.csv`、`snapshots.csv`。
+24. **每日纸面交易运行器**：`live.paper_runner.run_daily_paper_trade` 读取上一日纸面账户状态，串联订单生成、预检查、纸面成交、持仓更新、账户快照和落盘，形成可每天调用一次的纸面交易入口。
+25. **日终纸面交易脚本**：`scripts/run_daily_paper.py` 从 `output/rebalance_logs/<strategy>.csv` 读取最近一期目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用每日纸面交易运行器并打印摘要。
+
+### 日终纸面交易
+
+先运行 `python main.py` 生成目标权重和价格缓存，再运行：
+
+```bash
+python scripts/run_daily_paper.py
+```
+
+常用参数：
+
+```bash
+python scripts/run_daily_paper.py --strategy FUSED_ROLLING_SCORE_WEIGHTED
+python scripts/run_daily_paper.py --trade-date 2024-01-26
+python scripts/run_daily_paper.py --trade-status data/trade_status.csv
+python scripts/run_daily_paper.py --no-persist
+```
+
+脚本默认读取 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，输出订单计划、订单预检查、纸面成交和纸面账户状态。`--no-persist` 可用于只检查流程和摘要，不写账户文件。
 
 ### 回测与配置要点
 
@@ -95,7 +117,7 @@ python main.py
 - **行业权重上限**：`config.max_industry_weight` 默认 `0`，表示关闭；设为 `(0, 1)` 后，回测会从 `long_prices` / `industry_data` 中读取 `industry_col`（默认 `industry`），限制单个行业目标权重，避免组合因为 Top-K 或优化器把资金集中到同一行业。
 - **波动率目标**：`config.target_volatility` 默认 `0`，表示关闭；设为正数后，回测用 `volatility_target_lookback_days` 的历史收益协方差估算组合年化波动，若超过目标则按比例降低股票仓位，剩余记为现金。该 MVP 只降风险，不主动加杠杆。
 - **最小持仓数量**：`config.min_positions` 默认 `0`，表示关闭；开启后若有效目标持仓数少于阈值，会把股票总仓位缩到 `min_positions_exposure`，剩余记为现金，避免可交易标的不足时硬满仓。
-- **订单生成、预检查、纸面交易与账户状态**：`config.order_lot_size` 默认 `100`，用于 A 股一手约束；`config.min_order_amount` 默认 `0`，可过滤金额太小的碎片订单；`config.order_cash_buffer` 默认 `0`，用于买入后现金缓冲检查；`config.paper_initial_cash` 默认 `1_000_000`，用于虚拟账户初始化。当前不真实下单。
+- **订单生成、预检查、纸面交易与账户状态**：`config.order_lot_size` 默认 `100`，用于 A 股一手约束；`config.min_order_amount` 默认 `0`，可过滤金额太小的碎片订单；`config.order_cash_buffer` 默认 `0`，用于买入后现金缓冲检查；`config.paper_initial_cash` 默认 `1_000_000`，用于虚拟账户初始化。`live.paper_runner.run_daily_paper_trade` 可把这些步骤串成单日纸面交易流程，`scripts/run_daily_paper.py` 可从已有回测输出里自动读取输入并运行。当前不真实下单。
 - **单次换手上限**：`config.max_rebalance_turnover` 默认 `1.0`；首次建仓不节流，之后若目标权重变化超过上限，会按比例向新目标移动，`rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **调仓记录**：`meta["rebalance_log"]`；`main` 会打印每期标的与权重，并在 `persist_run_outputs=True` 时保存到 `output/rebalance_logs/*.csv`，其中包含流动性过滤前后候选数、行业上限是否触发、最大行业暴露、目标波动缩放比例、最小持仓检查和现金目标仓位等。
 - **决策审计记录**：`meta["decision_log"]`；在 `persist_run_outputs=True` 时保存到 `output/decision_logs/*.csv`，逐股票解释 `buy` / `sell` / `increase` / `decrease` / `hold` / `skip` 及原因，并记录所属行业与行业上限调整标记。
@@ -114,5 +136,5 @@ python main.py
 ### 测试
 
 ```bash
-python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality tests.test_risk_exposure tests.test_factors tests.test_factor_preprocess tests.test_factor_diagnostics tests.test_ic tests.test_factor_weighting tests.test_order_builder tests.test_order_precheck tests.test_paper_trading tests.test_account_state -v
+python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality tests.test_risk_exposure tests.test_factors tests.test_factor_preprocess tests.test_factor_diagnostics tests.test_ic tests.test_factor_weighting tests.test_order_builder tests.test_order_precheck tests.test_paper_trading tests.test_account_state tests.test_paper_runner tests.test_daily_paper_cli -v
 ```

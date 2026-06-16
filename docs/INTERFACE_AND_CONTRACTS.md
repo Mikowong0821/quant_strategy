@@ -108,6 +108,8 @@
 | `live.account_state` | `save_account_state(settings, strategy, cash, positions, snapshot=None, trade_date=None)` | 纸面账户现金、持仓、账户快照、日期 | 写 `output/paper_account/<strategy>/account.csv`、`positions.csv`、`snapshots.csv` |
 | `live.account_state` | `load_account_state(settings, strategy, default_cash=0.0)` | 策略名与默认现金 | 返回 `(cash, positions_df)`；状态不存在时返回默认现金和空持仓 |
 | `live.account_state` | `positions_from_trades(trades, current_positions=None, updated_at=None)` | 纸面交易日志和初始持仓 | 最新持仓 DataFrame，列含 `symbol/shares/available_shares/updated_at` |
+| `live.paper_runner` | `run_daily_paper_trade(settings, strategy, target_weights, latest_prices, trade_date, ...)` | `Settings`、策略名、目标权重、最新价格、交易日期、可选交易状态；内部读取纸面账户状态 | 单日纸面运行结果 dict，含订单计划、订单预检查、纸面交易日志、最新现金、最新持仓、账户快照与落盘路径 |
+| `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV | 调用 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交和账户状态 |
 
 ---
 

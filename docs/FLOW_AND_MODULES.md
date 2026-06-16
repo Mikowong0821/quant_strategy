@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading` 与 `live.account_state` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交，并保存纸面账户状态，但尚不连接券商。
+本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner` 与 `scripts/run_daily_paper.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交、保存纸面账户状态，并提供日终纸面交易脚本，但尚不连接券商。
 
 ---
 
@@ -125,7 +125,9 @@ flowchart TB
 
     subgraph liveprep["准实盘准备层"]
         META --> TARGET["最近一期目标权重<br/>rebalance_log picks/weights"]
-        TARGET --> OB["live/order_builder<br/>目标权重 + 当前持仓 + 最新价格"]
+        TARGET --> SCRIPT["scripts/run_daily_paper.py<br/>读取目标权重 + 最新价格"]
+        SCRIPT --> RUNNER["live/paper_runner<br/>单日纸面交易运行器"]
+        RUNNER --> OB["live/order_builder<br/>目标权重 + 当前持仓 + 最新价格"]
         OB --> ORDERS["订单计划<br/>BUY / SELL / shares / amount / reason"]
         ORDERS --> ORDERCSV["live/cache_io.save_order_plans<br/>output/order_plans/*.csv"]
         ORDERS --> OPC["live/order_precheck<br/>现金 / 可卖数量 / 手数 / 停牌涨跌停"]
@@ -136,6 +138,7 @@ flowchart TB
         PTRADES --> PTRADESCVS["live/cache_io.save_paper_trades<br/>output/paper_trades/*.csv"]
         PTRADES --> ASTATE["live/account_state<br/>保存现金 / 持仓 / 快照"]
         ASTATE --> ACSV["output/paper_account/<strategy><br/>account / positions / snapshots"]
+        ASTATE --> RUNNER
     end
 ```
 
@@ -168,6 +171,8 @@ flowchart TB
 | 19 | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
 | 20 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
 | 21 | `live/account_state` | 保存和读取纸面账户现金、持仓与每日快照 | 让纸面交易能跨天连续运行，而不是每次从初始资金重启 |
+| 22 | `live/paper_runner` | 读取账户状态，串联订单生成、预检查、纸面成交、持仓更新、账户快照与 CSV 落盘 | 把多个准实盘零件收束成“每天运行一次”的可调用入口 |
+| 23 | `scripts/run_daily_paper.py` | 从 `output/rebalance_logs/<strategy>.csv` 读取最近目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用 `run_daily_paper_trade` | 把函数入口变成可手动运行、后续可被定时任务调用的日终命令 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -190,6 +195,8 @@ flowchart TB
 - **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
 - **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
 - **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
+- **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、纸面成交、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。它仍不连接券商，但已经具备“今天给我目标权重和最新价格，我跑完纸面账户并保存结果”的入口形态。
+- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status` 和 `--no-persist` 调整运行口径。
 - **单次换手上限（`max_rebalance_turnover`）**：在单票上限、行业上限、波动率目标和最小持仓数量之后、撮合之前生效，默认 1.0；首次建仓不节流，之后若新旧目标权重差异和超过上限，则按比例从旧目标向新目标移动，并在 `rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC 分布与稳定性**：`analysis.ic.ic_distribution_summary` 统计 p05/p25/median/p75/p95、正负 IC 占比和极端值；`ic_rolling_stability` 按 `Settings.ic_rolling_windows` 统计滚动均值末值、滚动均值正值比例等，用来判断因子是否只靠少数日期支撑。

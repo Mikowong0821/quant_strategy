@@ -27,6 +27,8 @@ flowchart LR
   precheck[live/order_precheck]
   paper[live/paper_trading]
   state[live/account_state]
+  runner[live/paper_runner]
+  cli[live/daily_paper_cli + scripts/run_daily_paper.py]
   perf[analysis/performance]
   dq[analysis/data_quality]
   diag[analysis/factor_diagnostics]
@@ -55,6 +57,9 @@ flowchart LR
   opt --> sig
   precheck --> paper
   paper --> state
+  state --> runner
+  runner --> order
+  cli --> runner
   sig --> paper
   paper --> perf
 ```
@@ -155,6 +160,14 @@ flowchart LR
 | `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌和涨跌停约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
+| `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、纸面成交、持仓更新、账户快照和落盘，是后续自动调度和券商适配前的一日运行入口。 |
+| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用每日纸面运行器并生成命令行摘要。 |
+
+## 8.1 `scripts/`：日常运行入口
+
+| 文件 | 作用 |
+|------|------|
+| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--no-persist`。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 
@@ -180,6 +193,7 @@ flowchart LR
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
 7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
-8. `live/` → 数据接入、订单生成、订单预检查、纸面交易与账户状态；信号生成仍是占位。
+8. `live/` → 数据接入、订单生成、订单预检查、纸面交易、账户状态、每日纸面运行器与日终脚本辅助逻辑；信号生成仍是占位。
+9. `scripts/` → 日常运行入口，例如日终纸面交易命令。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。
