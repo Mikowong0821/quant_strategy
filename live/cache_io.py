@@ -437,6 +437,54 @@ def save_data_quality_reports(
     return out
 
 
+def save_order_plans(
+    settings: Settings,
+    order_plans_by_name: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将各策略订单计划写入 output/order_plans/<strategy>.csv。"""
+    base = settings.output_dir / "order_plans"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in order_plans_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False)
+        out[str(name)] = path
+    return out
+
+
+def save_order_checks(
+    settings: Settings,
+    order_checks_by_name: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将各策略订单预检查结果写入 output/order_checks/<strategy>.csv。"""
+    base = settings.output_dir / "order_checks"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in order_checks_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False)
+        out[str(name)] = path
+    return out
+
+
+def save_paper_trades(
+    settings: Settings,
+    paper_trades_by_name: Mapping[str, pd.DataFrame],
+) -> Dict[str, Path]:
+    """将各策略纸面交易成交 / 跳过日志写入 output/paper_trades/<strategy>.csv。"""
+    base = settings.output_dir / "paper_trades"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+    for name, frame in paper_trades_by_name.items():
+        safe = str(name).replace("/", "_")
+        path = base / ("%s.csv" % safe)
+        frame.to_csv(path, index=False)
+        out[str(name)] = path
+    return out
+
+
 def save_factor_diagnostics(
     settings: Settings,
     long_excess_summary: pd.DataFrame,

@@ -23,7 +23,10 @@ flowchart LR
   bt[backtest/]
   opt[models/]
   sig[live/signal_system]
+  order[live/order_builder]
+  precheck[live/order_precheck]
   paper[live/paper_trading]
+  state[live/account_state]
   perf[analysis/performance]
   dq[analysis/data_quality]
   diag[analysis/factor_diagnostics]
@@ -46,8 +49,12 @@ flowchart LR
   turn --> perf
   risk --> perf
   bt --> plot
+  bt --> order
+  order --> precheck
   fac --> opt
   opt --> sig
+  precheck --> paper
+  paper --> state
   sig --> paper
   paper --> perf
 ```
@@ -60,7 +67,7 @@ flowchart LR
 
 | 文件 | 作用 |
 |------|------|
-| `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、单票/行业/波动率/最小持仓/换手约束、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
+| `config.py` | **全局参数**：项目根、`data/` 路径、默认价格列、手续费、再平衡频率、回测起止日、单票/行业/波动率/最小持仓/换手约束、订单手数/最小订单金额/现金缓冲、纸面账户初始资金、年化用交易日数等；`get_tushare_token()` 从环境变量读取 Token，避免写死在代码里。 |
 | `main.py` | **MVP 程序入口**：拉数 → 多因子面板 → 数据质量报告 → 可选落盘 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 / 训练段权重 / 滚动权重日志 → 可选 IC CSV 与图 → 多列单因子回测（内部可做可交易性 / 流动性过滤与决策审计）→ **IC 列权或等权**融合 / **训练段静态综合权重**融合 / **调仓日前滚动综合权重**融合 → `run_multi_backtest`（同样复用过滤与审计）→ 股票池等权基准与超额收益 → 换手率与预估成本 → 风险暴露与集中度 → 净值/超额净值/IC/权重/换手/集中度/覆盖率图。复杂逻辑在子包中实现。 |
 | `requirements.txt` | **Python 依赖**列表，供虚拟环境一键安装。 |
 | `README.md` | 快速开始、目录总览、文档索引。 |
@@ -142,9 +149,12 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `data_feed.py` | **行情接入**：Tushare/AkShare 拉取或读本地 CSV，输出列名与契约对齐，供因子与回测使用。 |
-| `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、因子诊断、训练段权重、滚动权重日志、运行配置、绩效汇总、调仓日志、换手日志、集中度日志等，形成可复现实验档案。 |
+| `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、因子诊断、训练段权重、滚动权重日志、运行配置、绩效汇总、调仓日志、换手日志、订单计划、订单预检查结果、纸面交易日志、集中度日志等，形成可复现实验档案。 |
+| `account_state.py` | **纸面账户状态**：保存 / 读取虚拟账户现金、持仓和每日快照，让纸面交易可以跨天连续运行。 |
+| `order_builder.py` | **订单生成**：把目标权重、当前持仓、现金 / 总资产和最新价格转换成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。只生成订单计划，不连接券商、不模拟成交。 |
+| `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌和涨跌停约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
-| `paper_trading.py` | **模拟盘**：按信号与行情更新虚拟账户、记录成交；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
+| `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 
@@ -170,6 +180,6 @@ flowchart LR
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
 7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
-8. `live/` → 数据接入；信号与模拟盘占位。
+8. `live/` → 数据接入、订单生成、订单预检查、纸面交易与账户状态；信号生成仍是占位。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。

@@ -75,6 +75,13 @@ class Settings:
     # 最小持仓数量：0 表示关闭；若有效目标持仓数不足，则把股票总仓位缩到 min_positions_exposure，剩余保留现金。
     min_positions: int = 0
     min_positions_exposure: float = 1.0
+    # 订单生成：A 股默认 100 股一手；低于最小订单金额的调仓会被过滤，减少碎片订单。
+    order_lot_size: int = 100
+    min_order_amount: float = 0.0
+    # 订单预检查：买入后至少保留的现金缓冲。
+    order_cash_buffer: float = 0.0
+    # 纸面交易：虚拟账户默认初始资金。
+    paper_initial_cash: float = 1_000_000.0
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 

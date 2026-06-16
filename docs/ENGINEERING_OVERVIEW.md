@@ -9,7 +9,7 @@
 
 **定位**：A 股日频、研究向的 **「数据 → 因子面板 → 数据质量 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议与滚动权重 → 单因子/融合回测 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与净值图 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
 
-**MVP 定稿**：上述闭环 **已实现并可作为交付边界**；**不包含** 实盘信号生成、模拟盘撮合、券商接口、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
+**MVP 定稿**：上述闭环 **已实现并可作为交付边界**；`live.order_builder`、`live.order_precheck`、`live.paper_trading` 与 `live.account_state` 已补充为准实盘准备层，可把目标权重转换成订单计划、做基础可执行性检查、用虚拟账户模拟成交，并保存纸面账户状态；**不包含** 实盘信号生成、每日自动调度、券商接口、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
 
 **已跑通**：
 
@@ -28,6 +28,7 @@
 - **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 用当前股票池生成每日等权基准；`summarize_excess` 为每条策略补充 `excess_ann_return`、`tracking_error`、`information_ratio`。
 - **换手与成本**：`analysis.turnover` 由 `meta["rebalance_log"]` 计算逐期目标权重变化，补充 `avg_turnover`、`total_turnover`、`estimated_total_cost` 等指标。
 - **风险暴露与集中度**：`analysis.risk_exposure` 由同一份 `rebalance_log` 计算 HHI、`effective_n`、Top 权重和持仓数，补充组合是否过度集中的风控视角。
+- **订单生成、预检查、纸面交易与账户状态**：`live.order_builder.build_order_plan` 将目标权重、当前持仓、最新价格和现金 / 总资产转换为订单计划，字段包括 `BUY/SELL`、目标股数、调整股数、预估金额、当前/目标权重与交易原因；`build_order_plan_from_rebalance_meta` 可从最近一期 `meta["rebalance_log"]` 直接提取目标权重。`live.order_precheck.precheck_order_plan` 进一步检查现金、可卖数量、买入手数、最小金额、停牌 / 涨停买入 / 跌停卖出约束，并输出 `PASS/BLOCK` 与原因。`live.paper_trading.run_paper_trading` 只执行 `PASS` 订单，按手续费更新虚拟现金和持仓，并记录 `FILLED/SKIPPED`、现金变化与持仓变化。`live.account_state` 保存 / 读取虚拟现金、持仓和每日账户快照，使纸面账户可以连续运行。该层不真实下单。
 
 **作图**：
 
@@ -51,12 +52,15 @@
 - `live/cache_io.save_rebalance_logs`：写 **`output/rebalance_logs/<策略名>.csv`**，记录每次调仓的日期、标的、权重、配权方式、排序、流动性过滤前后候选数、行业上限是否触发、最大行业暴露、目标波动、缩放比例、最小持仓检查、现金目标仓位与阈值。
 - `live/cache_io.save_decision_logs`：写 **`output/decision_logs/<策略名>.csv`**，记录每个调仓日每只候选/上期持仓股票的因子分数、排序、流动性过滤、入选状态、行业、波动率缩放标记、上期权重、原始目标权重、最终目标权重、动作与原因。
 - `live/cache_io.save_turnover_logs`：写 **`output/turnover_logs/<策略名>.csv`**，记录每期换手率、预估成本、持仓数与配权方式。
+- `live/cache_io.save_order_plans`：写 **`output/order_plans/<策略名>.csv`**，保存由目标权重、当前持仓和最新价格生成的订单计划。
+- `live/cache_io.save_order_checks`：写 **`output/order_checks/<策略名>.csv`**，保存订单预检查结果和阻断原因。
+- `live/cache_io.save_paper_trades`：写 **`output/paper_trades/<策略名>.csv`**，保存纸面交易成交 / 跳过日志。
 - `live/cache_io.save_risk_exposure_logs` / `save_risk_exposure_summary`：写 **`output/risk_exposure/concentration_logs/<策略名>.csv`** 与 **`output/risk_exposure/concentration_summary.csv`**，记录逐期与汇总集中度。
 - `config.Settings.persist_run_outputs`（默认 `True`）为关时跳过上述写入。
 
 **明确非 MVP（占位 / 后续）**：
 
-- `live/signal_system.py`、`live/paper_trading.py`：`NotImplementedError`（实盘链路基座）。
+- `live/signal_system.py`：`NotImplementedError`（实盘信号生成占位）；每日自动调度、券商接口仍未实现。
 
 ---
 
@@ -64,11 +68,15 @@
 
 | 路径 | 职责 |
 |------|------|
-| `config.py` | `Settings`：`data_dir`、`output_dir`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`max_position_weight`、`max_industry_weight`、`industry_col`、`target_volatility`、`volatility_target_lookback_days`、`volatility_target_min_obs`、`min_positions`、`min_positions_exposure`、`max_rebalance_turnover`、`liquidity_lookback_days`、`min_avg_volume`、`min_avg_amount`、`enable_trade_status_filter`、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`ic_rolling_windows`、`factor_group_count`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`factor_weight_train_ratio`、`rolling_factor_weight_*`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
+| `config.py` | `Settings`：`data_dir`、`output_dir`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`max_position_weight`、`max_industry_weight`、`industry_col`、`target_volatility`、`volatility_target_lookback_days`、`volatility_target_min_obs`、`min_positions`、`min_positions_exposure`、`order_lot_size`、`min_order_amount`、`order_cash_buffer`、`paper_initial_cash`、`max_rebalance_turnover`、`liquidity_lookback_days`、`min_avg_volume`、`min_avg_amount`、`enable_trade_status_filter`、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`ic_rolling_windows`、`factor_group_count`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`factor_weight_train_ratio`、`rolling_factor_weight_*`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
 | `main.py` | 入口：拉数 → `build_four_factor_panel` → 数据质量报告 → 可选 `save_run_cache` → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议、训练段权重与滚动权重日志 → 可选 `save_ic_series` 与 **IC/权重 PNG** → 多列因子各 `run_single_backtest(..., factor_values=列, long_prices=long_df)` → 可交易性过滤与决策审计 → **`_build_fused_zscore_panel`（IC 列权或等权）** + **`fuse_static_weight_zscore`（训练段静态权重）** + **调仓日前滚动综合权重** → `run_multi_backtest(fused=..., long_prices=long_df)` → 股票池等权基准与超额指标 → 换手与成本 → 风险暴露与集中度 → 绩效汇总 / 调仓日志 / 决策审计日志 / 换手日志 / 集中度日志 / 配置快照落盘 → `plot_nav`。 |
 | `data/` | 原始/演示数据；存在 `prices_demo.csv` 时优先读本地。 |
 | `live/data_feed.py` | `fetch_daily_panel`、`fetch_fina_indicator_panel`、`load_prices_from_csv` 等。 |
-| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情、原始因子面板与标准化因子面板；`save_data_quality_reports`、`save_factor_diagnostics`、`save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_risk_exposure_logs`、`save_risk_exposure_summary` → 实验运行记录。 |
+| `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情、原始因子面板与标准化因子面板；`save_data_quality_reports`、`save_factor_diagnostics`、`save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_order_plans`、`save_order_checks`、`save_paper_trades`、`save_risk_exposure_logs`、`save_risk_exposure_summary` → 实验运行记录。 |
+| `live/account_state.py` | `save_account_state`、`load_account_state`、`positions_from_trades`：保存 / 读取纸面账户现金、持仓和每日快照。 |
+| `live/order_builder.py` | `build_order_plan`、`build_order_plan_from_rebalance_meta`：把目标权重转换成买卖股数和预估金额，是订单预检查、纸面交易和券商接口之前的准实盘准备层。 |
+| `live/order_precheck.py` | `precheck_order_plan`：检查订单计划的现金、可用股数、买入手数、最小金额、停牌和涨跌停约束，是纸面交易和真实下单前的基础风控闸门。 |
+| `live/paper_trading.py` | `run_paper_trading`、`paper_account_snapshot`：用虚拟账户执行通过预检查的订单，更新现金、持仓并生成账户快照，是券商接口前的纸面验证层。 |
 | `backtest/backtest_utils.py` | `to_returns`、`long_to_wide`、`wide_to_long`、`prices_to_wide_close`、`align_panel`。 |
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日可交易性过滤、Top-K、**等权 / 夏普 / 风险平价**、单票权重上限、行业权重上限、波动率目标与现金仓位、最小持仓数量、单次换手上限、停牌 / 涨跌停交易约束、撮合与净值；`meta` 含 `rebalance_log`、`decision_log`、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`min_positions`、`max_rebalance_turnover`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |

@@ -13,6 +13,9 @@ from config import get_settings
 from live.cache_io import (
     save_data_quality_reports,
     save_decision_logs,
+    save_order_checks,
+    save_order_plans,
+    save_paper_trades,
     save_performance_summary,
     save_rebalance_logs,
     save_risk_exposure_logs,
@@ -241,6 +244,84 @@ class TestExperimentOutputs(unittest.TestCase):
             self.assertTrue(turnover_path.is_file())
             turnover_df = pd.read_csv(turnover_path)
             self.assertAlmostEqual(float(turnover_df.loc[0, "turnover"]), 1.0)
+
+            order_paths = save_order_plans(
+                settings,
+                {
+                    "MOMENTUM": pd.DataFrame(
+                        {
+                            "date": ["2024-01-31"],
+                            "symbol": ["AAA"],
+                            "side": ["BUY"],
+                            "current_shares": [0],
+                            "target_shares": [100],
+                            "delta_shares": [100],
+                            "price": [10.0],
+                            "estimated_amount": [1000.0],
+                            "current_value": [0.0],
+                            "target_value": [1000.0],
+                            "current_weight": [0.0],
+                            "target_weight": [0.1],
+                            "trade_reason": ["increase_to_target_weight"],
+                        }
+                    )
+                },
+            )
+            order_path = order_paths["MOMENTUM"]
+            self.assertTrue(order_path.is_file())
+            order_df = pd.read_csv(order_path)
+            self.assertEqual(list(order_df["symbol"]), ["AAA"])
+            self.assertEqual(list(order_df["side"]), ["BUY"])
+
+            order_check_paths = save_order_checks(
+                settings,
+                {
+                    "MOMENTUM": pd.DataFrame(
+                        {
+                            "date": ["2024-01-31"],
+                            "symbol": ["AAA"],
+                            "side": ["BUY"],
+                            "delta_shares": [100],
+                            "price": [10.0],
+                            "estimated_amount": [1000.0],
+                            "check_status": ["PASS"],
+                            "check_reason": ["pass"],
+                        }
+                    )
+                },
+            )
+            order_check_path = order_check_paths["MOMENTUM"]
+            self.assertTrue(order_check_path.is_file())
+            order_check_df = pd.read_csv(order_check_path)
+            self.assertEqual(list(order_check_df["check_status"]), ["PASS"])
+
+            paper_trade_paths = save_paper_trades(
+                settings,
+                {
+                    "MOMENTUM": pd.DataFrame(
+                        {
+                            "date": ["2024-01-31"],
+                            "symbol": ["AAA"],
+                            "side": ["BUY"],
+                            "qty": [100],
+                            "price": [10.0],
+                            "gross_amount": [1000.0],
+                            "commission": [0.3],
+                            "net_cash_flow": [-1000.3],
+                            "cash_before": [10_000.0],
+                            "cash_after": [8_999.7],
+                            "position_before": [0],
+                            "position_after": [100],
+                            "fill_status": ["FILLED"],
+                            "fill_reason": ["filled"],
+                        }
+                    )
+                },
+            )
+            paper_trade_path = paper_trade_paths["MOMENTUM"]
+            self.assertTrue(paper_trade_path.is_file())
+            paper_trade_df = pd.read_csv(paper_trade_path)
+            self.assertEqual(list(paper_trade_df["fill_status"]), ["FILLED"])
 
             risk_paths = save_risk_exposure_logs(
                 settings,

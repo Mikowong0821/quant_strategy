@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文即 MVP 主流程**（不含 `live` 信号/模拟盘）。
+本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading` 与 `live.account_state` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交，并保存纸面账户状态，但尚不连接券商。
 
 ---
 
@@ -122,6 +122,21 @@ flowchart TB
         IC --> ICFIG["plot_ic（persist 时）<br/>ic_compare / ic_timeseries_*"]
         BT --> WFIG["plot_weights（persist 时）<br/>weights_*"]
     end
+
+    subgraph liveprep["准实盘准备层"]
+        META --> TARGET["最近一期目标权重<br/>rebalance_log picks/weights"]
+        TARGET --> OB["live/order_builder<br/>目标权重 + 当前持仓 + 最新价格"]
+        OB --> ORDERS["订单计划<br/>BUY / SELL / shares / amount / reason"]
+        ORDERS --> ORDERCSV["live/cache_io.save_order_plans<br/>output/order_plans/*.csv"]
+        ORDERS --> OPC["live/order_precheck<br/>现金 / 可卖数量 / 手数 / 停牌涨跌停"]
+        OPC --> CHECKS["订单检查结果<br/>PASS / BLOCK / reason"]
+        CHECKS --> CHECKCSV["live/cache_io.save_order_checks<br/>output/order_checks/*.csv"]
+        CHECKS --> PAPER["live/paper_trading<br/>虚拟账户模拟成交"]
+        PAPER --> PTRADES["成交 / 跳过日志<br/>FILLED / SKIPPED / cash / position"]
+        PTRADES --> PTRADESCVS["live/cache_io.save_paper_trades<br/>output/paper_trades/*.csv"]
+        PTRADES --> ASTATE["live/account_state<br/>保存现金 / 持仓 / 快照"]
+        ASTATE --> ACSV["output/paper_account/<strategy><br/>account / positions / snapshots"]
+    end
 ```
 
 夏普 / 风险平价在样本不足或外层异常时该期回退 **等权**（与下文第 3 节、`rebalance_log[].weighting` 一致）；`risk_parity` 优化器内部失败时回退逆波动率，仍记 `risk_parity`。若 `Settings.max_position_weight` 可行且触发裁剪，标签会追加 `_capped`；若 `Settings.max_industry_weight` 在 `(0, 1)`，目标权重会先限制单个行业暴露；若 `Settings.target_volatility > 0`，回测会用历史协方差估算组合年化波动，超目标时降低股票仓位并保留现金；若 `Settings.min_positions > 0` 且有效目标持仓数不足，会把股票总仓位缩到 `min_positions_exposure`；若 `Settings.max_rebalance_turnover` 触发调仓节流，标签会追加 `_turnover_capped`。若配置了 `Settings.min_avg_volume` / `min_avg_amount`，Top-K 前会先做可交易性过滤，并把过滤前后候选数写入 `rebalance_log`；若开启 `enable_trade_status_filter`，停牌 / 涨停 / 跌停约束会在撮合前调整目标权重；逐股票的入选、过滤、行业调整、波动率缩放、最小持仓缩放、交易阻断和节流原因写入 `decision_log`。**融合路径**：默认用 **滞后滚动 IC 均值** 对 z-score 后各因子列加权（见 `fuse_ic_weighted_zscore`）；IC **不**进入 Top-K 内 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
@@ -149,6 +164,10 @@ flowchart TB
 | 15 | `analysis/risk_exposure` | 由 `rebalance_log` 计算 HHI、effective_n、Top 权重 | 判断持仓是否过度集中，补充组合风控视角 |
 | 16 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`factor_diagnostics/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` | 可复现、可对照、可审计 |
 | 17 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
+| 18 | `live/order_builder` | 读取目标权重、当前持仓、最新价格、现金 / 总资产，按手数和最小订单金额生成订单计划 | 把研究层的“目标权重”转成准实盘层的“买卖多少股” |
+| 19 | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
+| 20 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
+| 21 | `live/account_state` | 保存和读取纸面账户现金、持仓与每日快照 | 让纸面交易能跨天连续运行，而不是每次从初始资金重启 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -167,6 +186,10 @@ flowchart TB
 - **行业权重上限（`max_industry_weight`）**：默认 0 表示关闭；设为 `(0, 1)` 后，回测从 `industry_col`（默认 `industry`）读取行业分类，在目标权重生成后限制单个行业最大暴露。若行业数据缺失，会把行业记为 `UNKNOWN` 或记录 `industry_missing_data`，方便后续补数据。
 - **波动率目标（`target_volatility`）**：默认 0 表示关闭；设为正数后，回测按 `volatility_target_lookback_days` 的历史协方差估算目标组合年化波动。若估算波动超过目标，则按 `target_volatility / estimated_volatility` 缩小股票目标仓位，剩余作为现金；MVP 只降仓位，不加杠杆。
 - **最小持仓数量（`min_positions`）**：默认 0 表示关闭；若有效目标持仓数少于阈值，则把股票总仓位缩到 `min_positions_exposure`，剩余保留现金，避免可交易标的不足时硬满仓。
+- **订单计划（`live.order_builder`）**：回测结束后，可把最近一期 `rebalance_log` 中的 `picks/weights` 视为目标权重，再结合当前持仓、现金 / 总资产和最新价格，生成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。该层只做订单计划，不做券商下单、不做成交回报。
+- **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
+- **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
+- **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
 - **单次换手上限（`max_rebalance_turnover`）**：在单票上限、行业上限、波动率目标和最小持仓数量之后、撮合之前生效，默认 1.0；首次建仓不节流，之后若新旧目标权重差异和超过上限，则按比例从旧目标向新目标移动，并在 `rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC 分布与稳定性**：`analysis.ic.ic_distribution_summary` 统计 p05/p25/median/p75/p95、正负 IC 占比和极端值；`ic_rolling_stability` 按 `Settings.ic_rolling_windows` 统计滚动均值末值、滚动均值正值比例等，用来判断因子是否只靠少数日期支撑。
@@ -194,6 +217,8 @@ flowchart TB
 | `Settings.target_volatility` | 组合目标年化波动；默认 `0` 表示关闭，开启后超目标则降低股票仓位 |
 | `Settings.volatility_target_lookback_days` / `volatility_target_min_obs` | 估算目标组合波动使用的历史收益窗口和最少样本 |
 | `Settings.min_positions` / `min_positions_exposure` | 最小有效目标持仓数，以及不足时允许的最高股票总仓位 |
+| `Settings.order_lot_size` / `min_order_amount` / `order_cash_buffer` | 订单生成和预检查的最小交易单位、最小订单金额与现金缓冲；A 股默认一手 100 股 |
+| `Settings.paper_initial_cash` | 纸面交易虚拟账户默认初始资金 |
 | `Settings.max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，`0` 表示关闭 |
 | `Settings.liquidity_lookback_days` | 可交易性过滤的成交量 / 成交额均值窗口 |
 | `Settings.min_avg_volume` / `min_avg_amount` | 最小平均成交量 / 成交额；默认 `0` 表示关闭对应过滤 |

@@ -81,7 +81,7 @@
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel, panel_zscore=None)` | `Settings`、行情、原始因子面板与可选标准化面板 | 写 `output/cache/` 下 `prices_long.csv`、`factor_panel.csv`、`factor_panel_zscore.csv` 等 |
-| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports`、`save_factor_diagnostics` | `Settings`、绩效 dict、回测 meta、换手表、集中度表、数据质量表、因子诊断表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv`、`factor_diagnostics/*.csv` |
+| `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_order_plans`、`save_order_checks`、`save_paper_trades`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports`、`save_factor_diagnostics` | `Settings`、绩效 dict、回测 meta、换手表、订单计划、订单预检查结果、纸面交易日志、集中度表、数据质量表、因子诊断表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`order_plans/*.csv`、`order_checks/*.csv`、`paper_trades/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv`、`factor_diagnostics/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong | `PanelLong`（Series 或单列表 DataFrame） |
 | `factors.preprocess` | `winsorize_series`、`cross_sectional_zscore`、`preprocess_factor_panel` | 原始因子面板 | 清洗后的横截面 z-score 面板 |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
@@ -100,7 +100,14 @@
 | `analysis.risk_exposure` | `concentration_frame`、`summarize_concentration`、`effective_n_wide` | `meta["rebalance_log"]` | 逐期集中度表、集中度汇总、effective_n 宽表 |
 | `analysis.plotting` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_effective_n`、`plot_factor_coverage`、`rebalance_log_to_weights_frame` | 净值；日 IC；权重宽表；换手宽表；effective_n 宽表；覆盖率表 | `save_path` 有值则 Agg 写 PNG，否则 `show` |
 | `live.signal_system` | `generate_signals(fused_score, rules, ...)` | `PanelLong` | `PanelLong` 取值 ∈ {-1, 0, 1} 或连续仓位 |
-| `live.paper_trading` | `run_paper_trading(symbols, ...)` | 标的列表 + config | 日志 / 成交记录 DataFrame（契约：列含 `date`, `symbol`, `side`, `qty`, `price`） |
+| `live.order_builder` | `build_order_plan(target_weights, current_positions, latest_prices, ...)` | 目标权重、当前持仓、最新价格、现金或总资产、手数与最小订单金额 | 订单计划 DataFrame，列含 `date/symbol/side/current_shares/target_shares/delta_shares/price/estimated_amount/current_weight/target_weight/trade_reason` |
+| `live.order_builder` | `build_order_plan_from_rebalance_meta(meta, current_positions, latest_prices, ...)` | 回测 `meta["rebalance_log"]` 最近一期、当前持仓、最新价格 | 从最近一期目标权重生成订单计划 |
+| `live.order_precheck` | `precheck_order_plan(order_plan, cash, current_positions=None, trade_status=None, ...)` | 订单计划、可用现金、当前持仓 / 可用股数、停牌 / 涨跌停状态、手数、最小订单金额、现金缓冲 | 订单检查 DataFrame，列含 `check_status/check_reason/cash_before/cash_after/available_shares/is_suspended/is_limit_up/is_limit_down` |
+| `live.paper_trading` | `run_paper_trading(orders=..., order_checks=..., current_positions=..., ...)` | 订单计划、订单预检查结果、当前持仓、虚拟现金、手续费率 | 纸面成交 / 跳过日志 DataFrame，列含 `date/symbol/side/qty/price/gross_amount/commission/net_cash_flow/cash_before/cash_after/position_before/position_after/fill_status/fill_reason` |
+| `live.paper_trading` | `paper_account_snapshot(trades, latest_prices, current_positions=None)` | 纸面成交日志、最新价格、可选初始持仓 | 账户快照 dict：`cash/market_value/total_asset/n_positions` |
+| `live.account_state` | `save_account_state(settings, strategy, cash, positions, snapshot=None, trade_date=None)` | 纸面账户现金、持仓、账户快照、日期 | 写 `output/paper_account/<strategy>/account.csv`、`positions.csv`、`snapshots.csv` |
+| `live.account_state` | `load_account_state(settings, strategy, default_cash=0.0)` | 策略名与默认现金 | 返回 `(cash, positions_df)`；状态不存在时返回默认现金和空持仓 |
+| `live.account_state` | `positions_from_trades(trades, current_positions=None, updated_at=None)` | 纸面交易日志和初始持仓 | 最新持仓 DataFrame，列含 `symbol/shares/available_shares/updated_at` |
 
 ---
 
@@ -136,6 +143,8 @@
 | `target_volatility` | 组合目标年化波动；默认 `0` 表示关闭，开启后只在估算波动超目标时降低股票仓位 |
 | `volatility_target_lookback_days` / `volatility_target_min_obs` | 目标波动估算使用的历史收益窗口和最少样本数 |
 | `min_positions` / `min_positions_exposure` | 最小有效目标持仓数；不足时把股票总仓位缩到该 exposure，剩余保留现金 |
+| `order_lot_size` / `min_order_amount` / `order_cash_buffer` | 订单生成 / 预检查使用的最小交易单位、最小订单金额与买入后现金缓冲；A 股默认 `order_lot_size=100` |
+| `paper_initial_cash` | 纸面交易虚拟账户默认初始资金 |
 | `max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，首次建仓不节流，`0` 表示关闭 |
 | `liquidity_lookback_days` | 可交易性过滤使用的成交量 / 成交额均值窗口 |
 | `min_avg_volume` / `min_avg_amount` | Top-K 前的最小平均成交量 / 成交额过滤；默认 `0` 表示关闭 |
