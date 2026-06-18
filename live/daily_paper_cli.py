@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -13,10 +14,16 @@ import pandas as pd
 
 from config import Settings, get_settings
 from live.paper_guard import (
+    DailyPaperGuardError,
     format_guard_issues,
     raise_on_guard_errors,
     validate_daily_inputs,
     validate_daily_result,
+)
+from live.paper_run_control import (
+    DailyPaperRunControlError,
+    load_trading_calendar_from_prices,
+    validate_daily_run_control,
 )
 from live.paper_runner import run_daily_paper_trade
 from live.paper_report import save_daily_paper_report
@@ -146,6 +153,9 @@ def run_daily_paper_from_outputs(
     generate_report: bool = True,
     run_guard: bool = True,
     max_price_age_days: int = 7,
+    run_control: bool = True,
+    allow_non_trading_day: bool = False,
+    allow_rerun: bool = False,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -162,6 +172,17 @@ def run_daily_paper_from_outputs(
     requested_date = pd.Timestamp(trade_date) if trade_date is not None else None
     price_date, latest_prices = load_latest_prices(price_cache_path, trade_date=requested_date)
     run_date = requested_date if requested_date is not None else price_date
+    trading_calendar = load_trading_calendar_from_prices(price_cache_path)
+    if run_control:
+        validate_daily_run_control(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            trading_calendar=trading_calendar,
+            persist_outputs=persist_outputs,
+            allow_non_trading_day=allow_non_trading_day,
+            allow_rerun=allow_rerun,
+        )
     target_date, target_weights = load_latest_target_weights(rebalance_path, trade_date=run_date)
     trade_status = load_trade_status(trade_status_path, trade_date=run_date)
     guard_issues = (
@@ -194,6 +215,7 @@ def run_daily_paper_from_outputs(
     }
     result["target_date"] = target_date
     result["price_date"] = price_date
+    result["trading_calendar_latest_date"] = trading_calendar[-1]
     if run_guard:
         guard_issues.extend(validate_daily_result(result))
         raise_on_guard_errors(guard_issues)
@@ -263,24 +285,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-report", action="store_true", help="不生成 Markdown 纸面交易日报")
     parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
     parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
+    parser.add_argument("--no-run-control", action="store_true", help="跳过交易日日历和重复运行保护")
+    parser.add_argument("--allow-non-trading-day", action="store_true", help="允许在非交易日强制运行")
+    parser.add_argument("--allow-rerun", action="store_true", help="允许覆盖同一交易日已有纸面账户快照")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     settings = get_settings()
-    result = run_daily_paper_from_outputs(
-        settings,
-        strategy=args.strategy,
-        trade_date=args.trade_date,
-        rebalance_log_path=args.rebalance_log,
-        prices_path=args.prices,
-        trade_status_path=args.trade_status,
-        persist_outputs=not args.no_persist,
-        generate_report=not args.no_report,
-        run_guard=not args.no_guard,
-        max_price_age_days=args.max_price_age_days,
-    )
+    try:
+        result = run_daily_paper_from_outputs(
+            settings,
+            strategy=args.strategy,
+            trade_date=args.trade_date,
+            rebalance_log_path=args.rebalance_log,
+            prices_path=args.prices,
+            trade_status_path=args.trade_status,
+            persist_outputs=not args.no_persist,
+            generate_report=not args.no_report,
+            run_guard=not args.no_guard,
+            max_price_age_days=args.max_price_age_days,
+            run_control=not args.no_run_control,
+            allow_non_trading_day=args.allow_non_trading_day,
+            allow_rerun=args.allow_rerun,
+        )
+    except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     print(format_daily_paper_summary(result))
     return 0
 

@@ -16,6 +16,7 @@ from live.daily_paper_cli import (
     run_daily_paper_from_outputs,
 )
 from live.paper_guard import DailyPaperGuardError
+from live.paper_run_control import DailyPaperRunControlError
 
 
 class TestDailyPaperCli(unittest.TestCase):
@@ -78,6 +79,73 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertTrue((settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md").is_file())
             self.assertIn("paper_report", result["paths"])
 
+    def test_run_control_blocks_non_trading_day_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-26", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-26", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            with self.assertRaises(DailyPaperRunControlError):
+                run_daily_paper_from_outputs(settings, strategy="TEST", trade_date="2024-01-27")
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                trade_date="2024-01-27",
+                allow_non_trading_day=True,
+            )
+            self.assertEqual(pd.Timestamp(result["trade_date"]).strftime("%Y-%m-%d"), "2024-01-27")
+
+    def test_run_control_blocks_duplicate_snapshot_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            run_daily_paper_from_outputs(settings, strategy="TEST", generate_report=False)
+            with self.assertRaises(DailyPaperRunControlError):
+                run_daily_paper_from_outputs(settings, strategy="TEST", generate_report=False)
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                generate_report=False,
+                allow_rerun=True,
+            )
+            self.assertEqual(pd.Timestamp(result["trade_date"]).strftime("%Y-%m-%d"), "2024-01-31")
+
     def test_guard_blocks_missing_target_price(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(
@@ -130,6 +198,7 @@ class TestDailyPaperCli(unittest.TestCase):
                 strategy="TEST",
                 trade_date="2024-02-20",
                 max_price_age_days=3,
+                allow_non_trading_day=True,
             )
             summary = format_daily_paper_summary(result)
 

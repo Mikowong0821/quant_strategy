@@ -29,6 +29,7 @@ flowchart LR
   state[live/account_state]
   runner[live/paper_runner]
   guard[live/paper_guard]
+  control[live/paper_run_control]
   cli[live/daily_paper_cli + scripts/run_daily_paper.py]
   perf[analysis/performance]
   dq[analysis/data_quality]
@@ -59,7 +60,9 @@ flowchart LR
   precheck --> paper
   paper --> state
   state --> runner
+  cli --> control
   cli --> guard
+  control --> runner
   guard --> runner
   runner --> guard
   runner --> order
@@ -167,13 +170,14 @@ flowchart LR
 | `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、纸面成交、持仓更新、账户快照和落盘，是后续自动调度和券商适配前的一日运行入口。 |
 | `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、账户快照、订单、阻断原因、成交、持仓和输出文件路径。 |
 | `paper_guard.py` | **运行失败 / 异常检查**：在日终纸面运行前后检查目标权重、价格、日期、现金、持仓、订单检查和成交日志；ERROR 阻断，WARNING 进入摘要和日报。 |
-| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报。 |
+| `paper_run_control.py` | **交易日日历 / 重复运行保护**：从价格缓存提取交易日日历，默认阻断非交易日运行；检查同日纸面账户快照，默认阻断重复覆盖。 |
+| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报。 |
 
 ## 8.1 `scripts/`：日常运行入口
 
 | 文件 | 作用 |
 |------|------|
-| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`。 |
+| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 
@@ -199,7 +203,7 @@ flowchart LR
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
 7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
-8. `live/` → 数据接入、订单生成、订单预检查、纸面交易、账户状态、每日纸面运行器、纸面交易日报、运行异常检查与日终脚本辅助逻辑；信号生成仍是占位。
+8. `live/` → 数据接入、订单生成、订单预检查、纸面交易、账户状态、每日纸面运行器、纸面交易日报、运行异常检查、交易日日历 / 重复运行保护与日终脚本辅助逻辑；信号生成仍是占位。
 9. `scripts/` → 日常运行入口，例如日终纸面交易命令。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。
