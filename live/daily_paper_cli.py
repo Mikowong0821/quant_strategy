@@ -12,7 +12,14 @@ from typing import Any, Sequence
 import pandas as pd
 
 from config import Settings, get_settings
+from live.paper_guard import (
+    format_guard_issues,
+    raise_on_guard_errors,
+    validate_daily_inputs,
+    validate_daily_result,
+)
 from live.paper_runner import run_daily_paper_trade
+from live.paper_report import save_daily_paper_report
 
 
 DEFAULT_STRATEGY = "FUSED_ROLLING_SCORE_WEIGHTED"
@@ -136,6 +143,9 @@ def run_daily_paper_from_outputs(
     prices_path: Path | None = None,
     trade_status_path: Path | None = None,
     persist_outputs: bool = True,
+    generate_report: bool = True,
+    run_guard: bool = True,
+    max_price_age_days: int = 7,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -154,6 +164,19 @@ def run_daily_paper_from_outputs(
     run_date = requested_date if requested_date is not None else price_date
     target_date, target_weights = load_latest_target_weights(rebalance_path, trade_date=run_date)
     trade_status = load_trade_status(trade_status_path, trade_date=run_date)
+    guard_issues = (
+        validate_daily_inputs(
+            target_weights=target_weights,
+            latest_prices=latest_prices,
+            run_date=run_date,
+            target_date=target_date,
+            price_date=price_date,
+            max_price_age_days=max_price_age_days,
+        )
+        if run_guard
+        else []
+    )
+    raise_on_guard_errors(guard_issues)
 
     result = run_daily_paper_trade(
         settings,
@@ -171,6 +194,13 @@ def run_daily_paper_from_outputs(
     }
     result["target_date"] = target_date
     result["price_date"] = price_date
+    if run_guard:
+        guard_issues.extend(validate_daily_result(result))
+        raise_on_guard_errors(guard_issues)
+    result["guard_issues"] = guard_issues
+    if persist_outputs and generate_report:
+        report_path = save_daily_paper_report(settings, result)
+        result.setdefault("paths", {})["paper_report"] = report_path
     return result
 
 
@@ -181,6 +211,7 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     trades = result["paper_trades"]
     snapshot = result["account_snapshot"]
     paths = result.get("paths", {})
+    guard_issues = result.get("guard_issues", [])
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -215,6 +246,9 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
                     lines.append("  %s.%s=%s" % (key, sub_key, sub_value))
             else:
                 lines.append("  %s=%s" % (key, value))
+    if guard_issues:
+        lines.append("guard:")
+        lines.append(format_guard_issues(guard_issues))
     return "\n".join(lines)
 
 
@@ -226,6 +260,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prices", type=Path, default=None, help="价格宽表 CSV；默认 output/cache/prices_wide_close.csv")
     parser.add_argument("--trade-status", type=Path, default=None, help="可选交易状态 CSV，含 symbol/ts_code 与 is_suspended/is_limit_up/is_limit_down")
     parser.add_argument("--no-persist", action="store_true", help="只运行不写订单、成交和账户状态文件")
+    parser.add_argument("--no-report", action="store_true", help="不生成 Markdown 纸面交易日报")
+    parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
+    parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
     return parser
 
 
@@ -240,6 +277,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         prices_path=args.prices,
         trade_status_path=args.trade_status,
         persist_outputs=not args.no_persist,
+        generate_report=not args.no_report,
+        run_guard=not args.no_guard,
+        max_price_age_days=args.max_price_age_days,
     )
     print(format_daily_paper_summary(result))
     return 0

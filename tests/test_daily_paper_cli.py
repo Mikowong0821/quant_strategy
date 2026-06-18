@@ -15,6 +15,7 @@ from live.daily_paper_cli import (
     load_latest_target_weights,
     run_daily_paper_from_outputs,
 )
+from live.paper_guard import DailyPaperGuardError
 
 
 class TestDailyPaperCli(unittest.TestCase):
@@ -74,6 +75,66 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertEqual(list(result["orders"]["symbol"]), ["AAA"])
             self.assertAlmostEqual(result["cash"], 5_000.0)
             self.assertTrue((settings.output_dir / "paper_account" / "TEST" / "snapshots.csv").is_file())
+            self.assertTrue((settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md").is_file())
+            self.assertIn("paper_report", result["paths"])
+
+    def test_guard_blocks_missing_target_price(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "BBB": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            with self.assertRaises(DailyPaperGuardError):
+                run_daily_paper_from_outputs(settings, strategy="TEST")
+
+    def test_guard_warning_is_returned_for_stale_price(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                trade_date="2024-02-20",
+                max_price_age_days=3,
+            )
+            summary = format_daily_paper_summary(result)
+
+            self.assertIn("stale_price_date", summary)
+            self.assertEqual(result["guard_issues"][0].severity, "WARNING")
 
 
 if __name__ == "__main__":
