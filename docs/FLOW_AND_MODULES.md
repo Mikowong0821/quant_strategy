@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control` 与 `scripts/run_daily_paper.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交、保存纸面账户状态、生成日报、检查异常，并保护交易日运行和重复写入，但尚不连接券商。
+本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交、保存纸面账户状态、生成日报、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口，但尚不连接券商。
 
 ---
 
@@ -125,7 +125,9 @@ flowchart TB
 
     subgraph liveprep["准实盘准备层"]
         META --> TARGET["最近一期目标权重<br/>rebalance_log picks/weights"]
+        TARGET --> SCHED["scripts/run_scheduled_daily_paper.py<br/>调度入口 + 日志"]
         TARGET --> SCRIPT["scripts/run_daily_paper.py<br/>读取目标权重 + 最新价格"]
+        SCHED --> SCRIPT
         SCRIPT --> CONTROL["live/paper_run_control<br/>交易日日历 / 重复运行保护"]
         CONTROL --> GUARD["live/paper_guard<br/>输入 / 结果异常检查"]
         GUARD --> RUNNER["live/paper_runner<br/>单日纸面交易运行器"]
@@ -144,6 +146,7 @@ flowchart TB
         RUNNER --> GUARD
         RUNNER --> REPORT["live/paper_report<br/>Markdown 纸面交易日报"]
         REPORT --> REPORTCSV["output/paper_reports/<strategy>/<date>.md"]
+        SCHED --> SLOG["output/scheduler_logs/<date>.log"]
     end
 ```
 
@@ -181,6 +184,7 @@ flowchart TB
 | 24 | `live/paper_report` | 将单日纸面运行结果整理成 Markdown 日报 | 每天跑完后可以直接复盘订单、阻断、成交、持仓和账户变化 |
 | 25 | `live/paper_guard` | 在日终纸面运行前检查目标权重、价格、日期，在运行后检查现金、持仓、订单检查和成交日志 | 把“看起来跑完了但输入/结果异常”的情况显式暴露；ERROR 阻断，WARNING 进入摘要和日报 |
 | 26 | `live/paper_run_control` | 从价格缓存提取交易日日历，检查运行日是否为交易日，并检查同日纸面账户快照是否已存在 | 防止周末/节假日误写新快照，也防止重复运行无意覆盖账户状态 |
+| 27 | `live/paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | 运行一次日终纸面交易，记录调度参数、stdout、stderr 和退出码 | 让 cron / launchd / 服务器调度器有稳定入口，也让失败有可查日志 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -208,6 +212,7 @@ flowchart TB
 - **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、账户快照、较上一快照变化、今日订单、被阻断订单、纸面成交、当前持仓和输出文件。
 - **运行失败 / 异常检查（`live.paper_guard`）**：默认随日终脚本启用。目标权重为空、价格缺失、价格无效、目标权重日期或价格日期晚于运行日、运行后现金为负等属于 ERROR；价格日期过旧、所有订单被阻断、成交层全部跳过等属于 WARNING。
 - **交易日日历 / 重复运行保护（`live.paper_run_control`）**：默认随日终脚本启用。交易日日历来自 `prices_wide_close.csv` 的日期列；显式指定非交易日会被阻断，除非使用 `--allow-non-trading-day`。同一策略同一日期已有 `snapshots.csv` 记录时会被阻断，除非使用 `--allow-rerun`。
+- **每日调度入口（`live.paper_scheduler` / `scripts/run_scheduled_daily_paper.py`）**：不在 Python 内部常驻循环，而是包装一次日终纸面交易并记录 `output/scheduler_logs/<date>.log`。系统层可以用 cron / launchd / 服务器任务调度器按固定时间调用它。
 - **单次换手上限（`max_rebalance_turnover`）**：在单票上限、行业上限、波动率目标和最小持仓数量之后、撮合之前生效，默认 1.0；首次建仓不节流，之后若新旧目标权重差异和超过上限，则按比例从旧目标向新目标移动，并在 `rebalance_log` 记录 `target_turnover`、`turnover_capped`、`turnover_scale`。
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC 分布与稳定性**：`analysis.ic.ic_distribution_summary` 统计 p05/p25/median/p75/p95、正负 IC 占比和极端值；`ic_rolling_stability` 按 `Settings.ic_rolling_windows` 统计滚动均值末值、滚动均值正值比例等，用来判断因子是否只靠少数日期支撑。

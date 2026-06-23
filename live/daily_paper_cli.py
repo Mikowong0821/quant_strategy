@@ -291,9 +291,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-    settings = get_settings()
+def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> int:
+    """执行已解析的日终纸面交易 CLI 参数。"""
     try:
         result = run_daily_paper_from_outputs(
             settings,
@@ -315,6 +314,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(format_daily_paper_summary(result))
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    return run_daily_paper_from_args(get_settings(), args)
 
 
 if __name__ == "__main__":

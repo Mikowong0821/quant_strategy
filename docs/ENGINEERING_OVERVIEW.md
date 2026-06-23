@@ -9,7 +9,7 @@
 
 **定位**：A 股日频、研究向的 **「数据 → 因子面板 → 数据质量 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议与滚动权重 → 单因子/融合回测 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与净值图 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
 
-**MVP 定稿**：上述闭环 **已实现并可作为交付边界**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control` 与 `scripts/run_daily_paper.py` 已补充为准实盘准备层，可把目标权重转换成订单计划、做基础可执行性检查、用虚拟账户模拟成交、保存纸面账户状态、生成 Markdown 日报，在日终运行前后检查异常，并保护交易日运行和重复写入；**不包含** 实盘信号生成、定时任务编排、券商接口、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
+**MVP 定稿**：上述闭环 **已实现并可作为交付边界**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` 已补充为准实盘准备层，可把目标权重转换成订单计划、做基础可执行性检查、用虚拟账户模拟成交、保存纸面账户状态、生成 Markdown 日报，在日终运行前后检查异常，保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；**不包含** 实盘信号生成、券商接口、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
 
 **已跑通**：
 
@@ -28,7 +28,7 @@
 - **基准与超额收益**：`analysis.benchmark.equal_weight_benchmark_nav` 用当前股票池生成每日等权基准；`summarize_excess` 为每条策略补充 `excess_ann_return`、`tracking_error`、`information_ratio`。
 - **换手与成本**：`analysis.turnover` 由 `meta["rebalance_log"]` 计算逐期目标权重变化，补充 `avg_turnover`、`total_turnover`、`estimated_total_cost` 等指标。
 - **风险暴露与集中度**：`analysis.risk_exposure` 由同一份 `rebalance_log` 计算 HHI、`effective_n`、Top 权重和持仓数，补充组合是否过度集中的风控视角。
-- **订单生成、预检查、纸面交易、账户状态、每日运行器、日终脚本、日报、异常检查与运行控制**：`live.order_builder.build_order_plan` 将目标权重、当前持仓、最新价格和现金 / 总资产转换为订单计划，字段包括 `BUY/SELL`、目标股数、调整股数、预估金额、当前/目标权重与交易原因；`build_order_plan_from_rebalance_meta` 可从最近一期 `meta["rebalance_log"]` 直接提取目标权重。`live.order_precheck.precheck_order_plan` 进一步检查现金、可卖数量、买入手数、最小金额、停牌 / 涨停买入 / 跌停卖出约束，并输出 `PASS/BLOCK` 与原因。`live.paper_trading.run_paper_trading` 只执行 `PASS` 订单，按手续费更新虚拟现金和持仓，并记录 `FILLED/SKIPPED`、现金变化与持仓变化。`live.account_state` 保存 / 读取虚拟现金、持仓和每日账户快照，使纸面账户可以连续运行。`live.paper_runner.run_daily_paper_trade` 将这些步骤串成单日纸面交易入口，返回订单、检查、成交、现金、持仓、快照和落盘路径。`live.paper_report` 将运行结果写成 Markdown 日报。`live.paper_guard` 检查目标权重、价格日期、价格有效性、现金、持仓、订单检查和成交日志，ERROR 阻断，WARNING 写入摘要与日报。`live.paper_run_control` 从价格缓存提取交易日日历，默认阻断非交易日运行和同日重复覆盖快照。`scripts/run_daily_paper.py` 从已有回测输出读取最近目标权重和最新价格，调用该入口并打印摘要。该层不真实下单。
+- **订单生成、预检查、纸面交易、账户状态、每日运行器、日终脚本、日报、异常检查、运行控制与调度入口**：`live.order_builder.build_order_plan` 将目标权重、当前持仓、最新价格和现金 / 总资产转换为订单计划，字段包括 `BUY/SELL`、目标股数、调整股数、预估金额、当前/目标权重与交易原因；`build_order_plan_from_rebalance_meta` 可从最近一期 `meta["rebalance_log"]` 直接提取目标权重。`live.order_precheck.precheck_order_plan` 进一步检查现金、可卖数量、买入手数、最小金额、停牌 / 涨停买入 / 跌停卖出约束，并输出 `PASS/BLOCK` 与原因。`live.paper_trading.run_paper_trading` 只执行 `PASS` 订单，按手续费更新虚拟现金和持仓，并记录 `FILLED/SKIPPED`、现金变化与持仓变化。`live.account_state` 保存 / 读取虚拟现金、持仓和每日账户快照，使纸面账户可以连续运行。`live.paper_runner.run_daily_paper_trade` 将这些步骤串成单日纸面交易入口，返回订单、检查、成交、现金、持仓、快照和落盘路径。`live.paper_report` 将运行结果写成 Markdown 日报。`live.paper_guard` 检查目标权重、价格日期、价格有效性、现金、持仓、订单检查和成交日志，ERROR 阻断，WARNING 写入摘要与日报。`live.paper_run_control` 从价格缓存提取交易日日历，默认阻断非交易日运行和同日重复覆盖快照。`live.paper_scheduler` 记录一次调度运行的参数、stdout、stderr 与退出码。`scripts/run_daily_paper.py` 从已有回测输出读取最近目标权重和最新价格并打印摘要；`scripts/run_scheduled_daily_paper.py` 适合交给 cron / launchd / 服务器调度器调用。该层不真实下单。
 
 **作图**：
 
@@ -81,8 +81,10 @@
 | `live/paper_report.py` | `build_daily_paper_report`、`save_daily_paper_report`：生成并保存纸面交易 Markdown 日报。 |
 | `live/paper_guard.py` | `validate_daily_inputs`、`validate_daily_result`、`raise_on_guard_errors`：检查日终纸面交易输入与结果异常，区分 ERROR 和 WARNING。 |
 | `live/paper_run_control.py` | `load_trading_calendar_from_prices`、`validate_daily_run_control`：从价格缓存提取交易日日历，阻断非交易日运行和重复覆盖快照。 |
+| `live/paper_scheduler.py` | `run_scheduled_daily_paper`：运行一次日终纸面交易，写调度日志并返回退出码。 |
 | `live/daily_paper_cli.py` | `run_daily_paper_from_outputs`、`format_daily_paper_summary`：读取已有调仓日志与价格缓存，运行交易日控制、异常检查、日终纸面交易和日报生成，并生成命令行摘要。 |
 | `scripts/run_daily_paper.py` | 日终纸面交易命令行入口：调用 `live.daily_paper_cli.main`，支持策略名、交易日、交易状态文件、只读检查模式、关闭日报、关闭 guard、允许非交易日和允许重复运行。 |
+| `scripts/run_scheduled_daily_paper.py` | 调度命令行入口：调用 `live.paper_scheduler.run_scheduled_daily_paper`，透传日终纸面交易参数并写 `output/scheduler_logs/<date>.log`。 |
 | `backtest/backtest_utils.py` | `to_returns`、`long_to_wide`、`wide_to_long`、`prices_to_wide_close`、`align_panel`。 |
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日可交易性过滤、Top-K、**等权 / 夏普 / 风险平价**、单票权重上限、行业权重上限、波动率目标与现金仓位、最小持仓数量、单次换手上限、停牌 / 涨跌停交易约束、撮合与净值；`meta` 含 `rebalance_log`、`decision_log`、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`min_positions`、`max_rebalance_turnover`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |
@@ -241,7 +243,7 @@
 | 方向 | 说明 |
 |------|------|
 | 作图 | `plot_nav` / `plot_ic` / `plot_weights`；`persist_run_outputs` 时写 IC 与权重 PNG（见 `main`）。 |
-| 实盘链路 | `scripts/run_daily_paper.py` 已提供日终纸面命令，`live.paper_report` 已提供日报，`live.paper_guard` 已提供运行异常检查，`live.paper_run_control` 已提供交易日日历与重复运行保护；后续补定时调度与券商接口适配。 |
+| 实盘链路 | `scripts/run_daily_paper.py` 已提供日终纸面命令，`live.paper_report` 已提供日报，`live.paper_guard` 已提供运行异常检查，`live.paper_run_control` 已提供交易日日历与重复运行保护，`scripts/run_scheduled_daily_paper.py` 已提供系统调度入口；后续补券商接口适配。 |
 | 融合扩展 | `fuse_models` 更多 `method`（如 `dynamic`、`xgboost`）。 |
 | 数据 | 启动时读 `output/cache` 命中则跳过 Tushare；或规范落盘至 `data/`。 |
 | 检验 | 扩展 `unittest`/`pytest`（含 `tests/test_optimizer.py`、`test_backtest_*`、`test_plotting.py`、`test_fusion.py`）。 |

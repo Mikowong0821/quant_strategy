@@ -113,6 +113,7 @@
 | `live.paper_guard` | `validate_daily_inputs(...)`、`validate_daily_result(result)`、`raise_on_guard_errors(issues)` | 目标权重、最新价格、运行日期、目标权重日期、价格日期、单日纸面运行结果 dict | `GuardIssue` 列表；ERROR 级问题可抛出 `DailyPaperGuardError`，WARNING 级问题供摘要和日报展示 |
 | `live.paper_run_control` | `load_trading_calendar_from_prices(path)`、`validate_daily_run_control(...)`、`has_paper_snapshot(...)` | 价格宽表缓存、策略名、运行日期、交易日日历、是否允许非交易日和重复运行 | 非交易日或重复运行时抛出 `DailyPaperRunControlError`；只读运行 `persist_outputs=False` 不阻断重复快照 |
 | `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV，可选关闭日报、guard 或 run control | 调用运行控制、异常检查与 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交、账户状态和 Markdown 日报 |
+| `live.paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | `run_scheduled_daily_paper(settings, daily_args=None, log_date=None)` / CLI | `Settings`、可选日志日期、透传给日终纸面交易的 CLI 参数 | 执行一次日终纸面交易，写 `output/scheduler_logs/<date>.log`，返回/退出码与日终纸面交易一致 |
 
 ---
 
