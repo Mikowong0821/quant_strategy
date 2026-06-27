@@ -23,6 +23,8 @@ def summarize(
     nav = nav.astype(float).dropna()
     if nav.empty:
         return {
+            "final_nav": np.nan,
+            "total_return": np.nan,
             "ann_return": np.nan,
             "ann_vol": np.nan,
             "sharpe": np.nan,
@@ -30,6 +32,8 @@ def summarize(
         }
     ret = nav.pct_change().fillna(0.0)
     n = len(nav)
+    final_nav = float(nav.iloc[-1])
+    total_return = float(nav.iloc[-1] / nav.iloc[0] - 1)
     ann_return = float((nav.iloc[-1] / nav.iloc[0]) ** (periods / max(n - 1, 1)) - 1)
     ann_vol = float(ret.std() * np.sqrt(periods))
     excess = ann_return - risk_free
@@ -39,6 +43,8 @@ def summarize(
     dd = cum / peak - 1
     mdd = float(dd.min())
     return {
+        "final_nav": final_nav,
+        "total_return": total_return,
         "ann_return": ann_return,
         "ann_vol": ann_vol,
         "sharpe": sharpe,

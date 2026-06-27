@@ -21,9 +21,13 @@ class Settings:
     project_root: Path
     data_dir: Path
     output_dir: Path
+    stock_pool_path: Path
+    stock_pool_code_col: str = "股票代码"
+    tushare_price_cache_path: Path | None = None
     price_col: str = "close"
     commission_rate: float = 0.0003
     rebalance_freq: str = "ME"
+    force_final_rebalance: bool = False
     trading_days_per_year: int = 252
     backtest_start: str = "2024-01-01"
     backtest_end: str = "2025-01-01"
@@ -89,8 +93,30 @@ class Settings:
 def get_settings() -> Settings:
     root = Path(__file__).resolve().parent
     data_dir = root / "data"
-    output_dir = root / "output"
-    return Settings(project_root=root, data_dir=data_dir, output_dir=output_dir)
+    output_env = os.environ.get("QUANT_OUTPUT_DIR", "").strip()
+    output_dir = Path(output_env).expanduser() if output_env else root / "output"
+    stock_pool_env = os.environ.get("QUANT_STOCK_POOL_PATH", "").strip()
+    stock_pool_path = Path(stock_pool_env).expanduser() if stock_pool_env else data_dir / "stock_pool.xlsx"
+    cache_env = os.environ.get("QUANT_TUSHARE_PRICE_CACHE", "").strip()
+    tushare_cache = Path(cache_env).expanduser() if cache_env else data_dir / "prices_tushare_cache.csv"
+    start = os.environ.get("QUANT_BACKTEST_START", "").strip() or Settings.backtest_start
+    end = os.environ.get("QUANT_BACKTEST_END", "").strip() or Settings.backtest_end
+    force_final_rebalance = os.environ.get("QUANT_FORCE_FINAL_REBALANCE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+    return Settings(
+        project_root=root,
+        data_dir=data_dir,
+        output_dir=output_dir,
+        stock_pool_path=stock_pool_path,
+        tushare_price_cache_path=tushare_cache,
+        backtest_start=start,
+        backtest_end=end,
+        force_final_rebalance=force_final_rebalance,
+    )
 
 
 def get_tushare_token() -> str:

@@ -10,6 +10,7 @@ import pandas as pd
 from backtest.backtest_single import (
     _apply_max_position_cap,
     _apply_rebalance_turnover_cap,
+    _rebalance_dates,
     _target_weight_lists,
     _weights_for_rebalance,
     run_single_backtest,
@@ -62,6 +63,15 @@ class TestWeightsForRebalance(unittest.TestCase):
         self.assertAlmostEqual(turnover, 1.0)
         self.assertAlmostEqual(scale, 1.0)
         self.assertEqual(capped, {"AAA": 0.5, "BBB": 0.5})
+
+    def test_rebalance_dates_can_force_final_trading_day(self) -> None:
+        prices = pd.DataFrame(
+            {"AAA": np.linspace(1.0, 2.0, 13)},
+            index=pd.bdate_range("2026-06-01", "2026-06-17"),
+        )
+        settings = replace(get_settings(), force_final_rebalance=True)
+        dates = _rebalance_dates(prices, settings)
+        self.assertIn(pd.Timestamp("2026-06-17"), dates)
 
     def test_target_weight_lists_prefers_selected_then_previous(self) -> None:
         picks, weights = _target_weight_lists(

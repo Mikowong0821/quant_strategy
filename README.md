@@ -33,12 +33,12 @@ source .venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 ```
 
-Token：优先环境变量 `TUSHARE_TOKEN`；未设置时使用 `config.py` 内 `_TUSHARE_TOKEN_LOCAL`（**勿将含真实密钥的 config 提交远程**）。
+Token：优先环境变量 `TUSHARE_TOKEN`；未设置时使用 `config.py` 内 `_TUSHARE_TOKEN_LOCAL`（**勿将含真实密钥的 config 提交远程**）。真实股票池默认读取 `data/stock_pool.xlsx`，也可用环境变量 `QUANT_STOCK_POOL_PATH` 指向本机 Excel/CSV；行情拉取后默认缓存到 `data/prices_tushare_cache.csv`，也可用 `QUANT_TUSHARE_PRICE_CACHE` 改路径。
 
 ## 目录结构
 
 ```
-data/           # 原始/演示数据（如 prices_demo.csv）
+data/           # 原始/演示数据（如 prices_demo.csv、stock_pool.xlsx、本地行情缓存）
 output/         # 运行生成：nav_compare.png、excess_nav_compare.png、turnover_compare.png、performance_summary.csv、cache/、data_quality/、factor_diagnostics/、risk_exposure/ 等
 factors/        # 因子与 panel_builder
 backtest/       # backtest_single、backtest_multi、utils
@@ -58,7 +58,7 @@ python main.py
 
 ### 当前 `main.py` 实际顺序（与代码一致）
 
-1. **数据**：`data/prices_demo.csv` 优先；否则 Tushare（`main._DEFAULT_TS_SYMBOLS`）；失败则合成宽表。得到 `prices`（宽表）与 `long_df`。
+1. **数据**：`data/prices_demo.csv` 优先；否则读取 Tushare 行情缓存；若缓存不存在，则从 `Settings.stock_pool_path` 指定的 Excel/CSV 股票池读取标的并拉取 Tushare 日线，同时写入 `Settings.tushare_price_cache_path`；若股票池不存在才使用 `main._DEFAULT_TS_SYMBOLS` 示例股票池；失败则合成宽表。得到 `prices`（宽表）与 `long_df`。
 2. **因子面板**：`factors.panel_builder.build_four_factor_panel`（默认七列：`MOMENTUM`、`MOMENTUM_60D`、`REVERSAL_5D`、`VOLATILITY`、`VOLUME_RATIO_20D`、`PE`、`ROE`）。
 3. **数据质量**：`analysis.data_quality` 输出价格覆盖、因子覆盖、调仓日覆盖报告；若 `persist_run_outputs`，保存到 `output/data_quality/`。
 4. **落盘**：若 `persist_run_outputs`，`live.cache_io.save_run_cache` → `output/cache/`（`prices_long.csv`、`prices_wide_close.csv`、`factor_panel.csv`、`factor_panel_zscore.csv`、`run_meta.txt`）。
@@ -146,7 +146,7 @@ python scripts/run_scheduled_daily_paper.py --log-date 2024-01-26 --strategy TES
 
 ### 依赖
 
-见 `requirements.txt`（含 **pandas、numpy、scipy、matplotlib、scikit-learn、tushare** 等）。
+见 `requirements.txt`（含 **pandas、openpyxl、numpy、scipy、matplotlib、scikit-learn、tushare** 等）。
 
 ### 非 MVP（占位或扩展）
 
@@ -156,5 +156,5 @@ python scripts/run_scheduled_daily_paper.py --log-date 2024-01-26 --strategy TES
 ### 测试
 
 ```bash
-python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality tests.test_risk_exposure tests.test_factors tests.test_factor_preprocess tests.test_factor_diagnostics tests.test_ic tests.test_factor_weighting tests.test_order_builder tests.test_order_precheck tests.test_paper_trading tests.test_account_state tests.test_paper_runner tests.test_daily_paper_cli tests.test_paper_report tests.test_paper_guard tests.test_paper_run_control tests.test_paper_scheduler -v
+python3 -m unittest tests.test_optimizer tests.test_backtest_multi tests.test_backtest_single tests.test_plotting tests.test_fusion tests.test_cache_io tests.test_benchmark tests.test_turnover tests.test_data_quality tests.test_risk_exposure tests.test_factors tests.test_factor_preprocess tests.test_factor_diagnostics tests.test_ic tests.test_factor_weighting tests.test_stock_pool tests.test_order_builder tests.test_order_precheck tests.test_paper_trading tests.test_account_state tests.test_paper_runner tests.test_daily_paper_cli tests.test_paper_report tests.test_paper_guard tests.test_paper_run_control tests.test_paper_scheduler -v
 ```

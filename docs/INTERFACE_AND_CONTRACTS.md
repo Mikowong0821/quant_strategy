@@ -17,6 +17,16 @@
 
 ## 2. 磁盘数据（`data/`）
 
+### 2.0 股票池：`data/stock_pool.xlsx` 或环境变量 `QUANT_STOCK_POOL_PATH`
+
+**最低必需列**：
+
+| 列名 | dtype | 说明 |
+|------|--------|------|
+| `股票代码` | str | 标的代码；推荐 Tushare 风格 `001309.SZ`，也支持 `600519` 等常见格式并在 `live.stock_pool` 规范化 |
+
+股票池文件支持 `.xlsx` / `.xls` / `.csv`。本地真实股票池通常不进入 Git；默认 `.gitignore` 会忽略 `data/*.xlsx`、`data/*.xls` 与 `data/*.csv`。
+
 ### 2.1 行情：`data/stock_<ts_code中的数字部分>.csv` 或聚合多标的 `prices.csv`（二选一需在 `config` 中声明）
 
 **最低必需列**：
@@ -78,6 +88,8 @@
 | 模块 | 函数 | 输入契约 | 输出契约 |
 |------|------|-----------|-----------|
 | `config` | `get_settings()` | 无 | 只读配置对象（路径、费率、回测区间、价格列名等） |
+| `live.stock_pool` | `load_stock_pool(path, code_col="股票代码")` | Excel/CSV 股票池文件路径 | 去重后的 Tushare `ts_code` 列表 |
+| `live.stock_pool` | `normalize_ts_code(value)` | 常见股票代码写法 | 规范化为 `000001.SZ` / `600519.SH` 等 Tushare 风格代码 |
 | `live.data_feed` | `get_data_tushare(symbol, start, end, ...)` | 合法 `ts_code`、ISO 日期 | 满足 §2.1 列规范的 `pd.DataFrame`（可含额外列） |
 | `live.data_feed` | `load_prices_from_csv(path_or_glob)` | 磁盘路径 | 长表或宽表 + 元数据说明（推荐返回 long 并标准化列名） |
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel, panel_zscore=None)` | `Settings`、行情、原始因子面板与可选标准化面板 | 写 `output/cache/` 下 `prices_long.csv`、`factor_panel.csv`、`factor_panel_zscore.csv` 等 |
@@ -137,6 +149,8 @@
 | 字段 | 说明 |
 |------|------|
 | `project_root` / `data_dir` / `output_dir` | 路径；缓存默认 `output_dir/cache/` |
+| `stock_pool_path` / `stock_pool_code_col` | 股票池文件路径与代码列名；默认 `data/stock_pool.xlsx` 和 `股票代码`，可用 `QUANT_STOCK_POOL_PATH` 改路径 |
+| `tushare_price_cache_path` | Tushare 日线行情本地缓存路径；默认 `data/prices_tushare_cache.csv`，可用 `QUANT_TUSHARE_PRICE_CACHE` 改路径 |
 | `backtest_start` / `backtest_end` | 回测区间（字符串 ISO 日期） |
 | `rebalance_freq` | 再平衡频率，默认 `ME`（月末） |
 | `top_k` | 每期多头只数 |
@@ -170,6 +184,7 @@
 ### 6.2 Token 与路径
 
 - **API Token**：优先环境变量 `TUSHARE_TOKEN`；当前工程在 `config.py` 中允许**本地回退**（便于本机跑通）。**含密钥的 `config.py` 勿推送到远程仓库**。
+- **股票池与行情缓存**：`QUANT_STOCK_POOL_PATH` 可指向本机 Excel/CSV 股票池；`QUANT_TUSHARE_PRICE_CACHE` 可指定行情缓存 CSV。默认 `data/*.csv`、`data/*.xlsx`、`data/*.xls` 均不进 Git，避免误公开真实股票池与行情数据。
 - **路径**：通过 `get_settings()` 的 `data_dir`、`output_dir` 访问 `data/`、`output/`，避免硬编码散落。
 
 ---

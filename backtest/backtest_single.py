@@ -24,6 +24,15 @@ def _resample_freq_alias(freq: str) -> str:
     return {"M": "ME", "Q": "QE", "A": "YE", "Y": "YE"}.get(freq, freq)
 
 
+def _rebalance_dates(prices_wide: pd.DataFrame, settings: Any) -> pd.DatetimeIndex:
+    """返回调仓日；可选把样本最后一个交易日也纳入调仓日。"""
+    rf = _resample_freq_alias(settings.rebalance_freq)
+    dates = prices_wide.resample(rf).last().index.intersection(prices_wide.index)
+    if bool(getattr(settings, "force_final_rebalance", False)) and len(prices_wide.index) > 0:
+        dates = dates.union(pd.DatetimeIndex([prices_wide.index[-1]]))
+    return dates.sort_values()
+
+
 def _portfolio_value(cash: float, shares: pd.Series, px: pd.Series) -> float:
     stock_val = 0.0
     for s in shares.index:
@@ -1121,8 +1130,7 @@ def run_single_backtest(
     factor_values = factor_values.copy()
     factor_values.index = factor_values.index.set_names(["date", "symbol"])
 
-    rf = _resample_freq_alias(settings.rebalance_freq)
-    rebalance_dates = prices_wide.resample(rf).last().index.intersection(prices_wide.index)
+    rebalance_dates = _rebalance_dates(prices_wide, settings)
 
     symbols = list(prices_wide.columns)
     shares = pd.Series(0.0, index=symbols)

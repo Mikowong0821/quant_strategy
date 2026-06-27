@@ -10,8 +10,12 @@
 flowchart TB
     subgraph data["数据层"]
         CSV["data/prices_demo.csv（可选）"]
+        POOL["live/stock_pool<br/>Excel / CSV 股票池"]
+        CACHE["data/prices_tushare_cache.csv<br/>Tushare 本地缓存"]
         TS["live/data_feed<br/>Tushare / 合成兜底"]
         CSV --> LONG["长表 long_df"]
+        CACHE --> LONG
+        POOL --> TS
         TS --> LONG
         LONG --> WIDE["宽表 prices<br/>backtest_utils.long_to_wide"]
     end
@@ -159,7 +163,7 @@ flowchart TB
 | 顺序 | 位置 | 做什么 | 意义 |
 |------|------|--------|------|
 | 1 | `config.get_settings()` | 读路径、区间、`top_k`、费率、`portfolio_weighting`、IC 前瞻天数等 | 集中参数，避免魔法数 |
-| 2 | `live/data_feed` + `backtest_utils` | 得到 `long_df`、`prices` 宽表 | 统一行情形态，供因子与回测共用 |
+| 2 | `live/stock_pool` + `live/data_feed` + `backtest_utils` | 优先本地 demo / Tushare 缓存；否则从 Excel/CSV 股票池读取标的并拉取 Tushare 日线，得到 `long_df`、`prices` 宽表 | 摆脱默认示例股票池，统一真实股票池、行情缓存与回测数据形态 |
 | 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE 等列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
 | 4 | `analysis/data_quality` | 统计价格覆盖、因子覆盖、调仓日有效截面 | 判断结果是否建立在足够样本上 |
 | 5 | `factors/preprocess` + `live/cache_io.save_run_cache`（可选） | 生成横截面标准化因子面板，并写 `output/cache/*.csv` | 复现与离线分析；多因子融合使用统一 z-score 口径 |

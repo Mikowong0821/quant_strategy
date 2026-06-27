@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -71,6 +73,7 @@ from live.cache_io import (
     save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
+from live.stock_pool import load_stock_pool
 from models.factor_weighting import build_factor_weight_summary
 from models.fusion import (
     fuse_equal_weight_zscore,
@@ -312,7 +315,10 @@ def _constrain_factor_weights(
 
 def _last_rebalance_dates(prices: pd.DataFrame, settings: Settings) -> pd.DatetimeIndex:
     rf = _resample_freq_alias(settings.rebalance_freq)
-    return prices.resample(rf).last().index.intersection(prices.index).sort_values()
+    dates = prices.resample(rf).last().index.intersection(prices.index)
+    if bool(getattr(settings, "force_final_rebalance", False)) and len(prices.index) > 0:
+        dates = dates.union(pd.DatetimeIndex([prices.index[-1]]))
+    return dates.sort_values()
 
 
 def _build_rolling_score_weighted_fusion(
@@ -472,6 +478,58 @@ def _demo_price_wide() -> pd.DataFrame:
     return pd.DataFrame(px, index=days, columns=syms)
 
 
+def _load_market_data(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    读取本地/远程行情数据，返回 `(long_df, prices_wide)`。
+
+    优先级：
+    1. `data/prices_demo.csv`
+    2. `settings.tushare_price_cache_path`
+    3. `settings.stock_pool_path` + Tushare 拉取并写缓存
+    4. 默认示例股票 + Tushare 拉取
+    5. 合成数据兜底
+    """
+    demo_path = settings.data_dir / "prices_demo.csv"
+    if demo_path.is_file():
+        print("加载本地数据:", demo_path)
+        long_df = load_prices_from_csv(demo_path)
+        return long_df, long_to_wide(long_df, settings.price_col)
+
+    cache_path = settings.tushare_price_cache_path
+    if cache_path is not None and Path(cache_path).is_file():
+        print("加载 Tushare 本地行情缓存:", cache_path)
+        long_df = load_prices_from_csv(cache_path)
+        prices = long_to_wide(long_df, settings.price_col)
+        print("本地缓存已对齐: %d 只股票, %d 个交易日" % (prices.shape[1], prices.shape[0]))
+        return long_df, prices
+
+    symbols = list(_DEFAULT_TS_SYMBOLS)
+    pool_path = settings.stock_pool_path
+    if pool_path is not None and Path(pool_path).is_file():
+        symbols = load_stock_pool(pool_path, code_col=settings.stock_pool_code_col)
+        print("加载股票池: %s，%d 只股票" % (pool_path, len(symbols)))
+    else:
+        print("未找到股票池文件 %s，使用默认示例股票池" % pool_path)
+
+    try:
+        print(
+            "尝试从 Tushare 拉取（区间 %s ~ %s，股票数=%d）"
+            % (settings.backtest_start, settings.backtest_end, len(symbols))
+        )
+        long_df = fetch_daily_panel(symbols, settings.backtest_start, settings.backtest_end)
+        if cache_path is not None:
+            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+            long_df.to_csv(cache_path, index=False, date_format="%Y-%m-%d")
+            print("Tushare 行情已缓存:", cache_path)
+        prices = long_to_wide(long_df, settings.price_col)
+        print("Tushare 已对齐: %d 只股票, %d 个交易日" % (prices.shape[1], prices.shape[0]))
+        return long_df, prices
+    except Exception as e:
+        print("Tushare 不可用，回退合成数据:", e)
+        prices = _demo_price_wide()
+        return wide_to_long(prices, settings.price_col), prices
+
+
 def _resample_freq_alias(freq: str) -> str:
     return {"M": "ME", "Q": "QE", "A": "YE", "Y": "YE"}.get(freq, freq)
 
@@ -519,36 +577,7 @@ def main() -> None:
         "配置: portfolio_weighting=%s（equal=等权；max_sharpe=夏普；risk_parity=风险平价）"
         % settings.portfolio_weighting
     )
-    demo_path = settings.data_dir / "prices_demo.csv"
-    long_df: pd.DataFrame | None = None
-
-    if demo_path.is_file():
-        print("加载本地数据:", demo_path)
-        long_df = load_prices_from_csv(demo_path)
-        prices = long_to_wide(long_df, settings.price_col)
-    else:
-        try:
-            print(
-                "未找到 data/prices_demo.csv，尝试从 Tushare 拉取（区间 %s ~ %s）"
-                % (settings.backtest_start, settings.backtest_end)
-            )
-            long_df = fetch_daily_panel(
-                _DEFAULT_TS_SYMBOLS,
-                settings.backtest_start,
-                settings.backtest_end,
-            )
-            prices = long_to_wide(long_df, settings.price_col)
-            print(
-                "Tushare 已对齐: %d 只股票, %d 个交易日"
-                % (prices.shape[1], prices.shape[0])
-            )
-        except Exception as e:
-            print("Tushare 不可用，回退合成数据:", e)
-            prices = _demo_price_wide()
-            long_df = wide_to_long(prices, settings.price_col)
-
-    if long_df is None:
-        long_df = wide_to_long(prices, settings.price_col)
+    long_df, prices = _load_market_data(settings)
 
     print("\n构建因子面板（多列原始因子，只计算一次）…")
     try:
@@ -569,8 +598,7 @@ def main() -> None:
 
     data_quality_reports: dict[str, pd.DataFrame] = {}
     try:
-        rf = _resample_freq_alias(settings.rebalance_freq)
-        rebalance_dates = prices.resample(rf).last().index.intersection(prices.index)
+        rebalance_dates = _last_rebalance_dates(prices, settings)
         data_quality_reports = {
             "price_coverage": price_coverage(prices),
             "factor_coverage": factor_coverage(panel),

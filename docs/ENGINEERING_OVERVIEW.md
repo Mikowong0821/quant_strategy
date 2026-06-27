@@ -13,7 +13,7 @@
 
 **已跑通**：
 
-- 行情：Tushare 多标的日线、或 `data/prices_demo.csv`、或合成宽表兜底。
+- 行情：`data/prices_demo.csv`、Tushare 日线本地缓存、Excel/CSV 股票池驱动的 Tushare 多标的日线，或合成宽表兜底。
 - 财务：`fina_indicator` 拉取并与交易日对齐（PE/ROE）。
 - 因子：`factors/panel_builder.build_four_factor_panel` 一次性产出多列（短/长动量、短反转、低波、成交量放大、PE、ROE）；`main` 中单因子回测 **传入预计算 `factor_values`**（不重复算子）。`run_single_backtest` 仍支持仅传 `factor_name` 走注册表自动算子。
 - 因子预处理：`factors.preprocess` 按交易日横截面对每列因子做 winsorize 与 z-score，生成 `factor_panel_zscore.csv`；多因子融合复用同一套标准化口径。
@@ -68,10 +68,11 @@
 
 | 路径 | 职责 |
 |------|------|
-| `config.py` | `Settings`：`data_dir`、`output_dir`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`max_position_weight`、`max_industry_weight`、`industry_col`、`target_volatility`、`volatility_target_lookback_days`、`volatility_target_min_obs`、`min_positions`、`min_positions_exposure`、`order_lot_size`、`min_order_amount`、`order_cash_buffer`、`paper_initial_cash`、`max_rebalance_turnover`、`liquidity_lookback_days`、`min_avg_volume`、`min_avg_amount`、`enable_trade_status_filter`、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`ic_rolling_windows`、`factor_group_count`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`factor_weight_train_ratio`、`rolling_factor_weight_*`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
-| `main.py` | 入口：拉数 → `build_four_factor_panel` → 数据质量报告 → 可选 `save_run_cache` → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议、训练段权重与滚动权重日志 → 可选 `save_ic_series` 与 **IC/权重 PNG** → 多列因子各 `run_single_backtest(..., factor_values=列, long_prices=long_df)` → 可交易性过滤与决策审计 → **`_build_fused_zscore_panel`（IC 列权或等权）** + **`fuse_static_weight_zscore`（训练段静态权重）** + **调仓日前滚动综合权重** → `run_multi_backtest(fused=..., long_prices=long_df)` → 股票池等权基准与超额指标 → 换手与成本 → 风险暴露与集中度 → 绩效汇总 / 调仓日志 / 决策审计日志 / 换手日志 / 集中度日志 / 配置快照落盘 → `plot_nav`。 |
-| `data/` | 原始/演示数据；存在 `prices_demo.csv` 时优先读本地。 |
+| `config.py` | `Settings`：`data_dir`、`output_dir`、`stock_pool_path`、`stock_pool_code_col`、`tushare_price_cache_path`、`backtest_start`/`end`、`rebalance_freq`（默认 `ME`）、`top_k`、`commission_rate`、`portfolio_weighting`（`equal`/`max_sharpe`/`risk_parity`）、`max_position_weight`、`max_industry_weight`、`industry_col`、`target_volatility`、`volatility_target_lookback_days`、`volatility_target_min_obs`、`min_positions`、`min_positions_exposure`、`order_lot_size`、`min_order_amount`、`order_cash_buffer`、`paper_initial_cash`、`max_rebalance_turnover`、`liquidity_lookback_days`、`min_avg_volume`、`min_avg_amount`、`enable_trade_status_filter`、`optimizer_return_window`、`optimizer_min_obs`、`ic_forward_days`、`ic_rolling_windows`、`factor_group_count`、`fusion_use_ic_weights`、`fusion_ic_rolling_window`、`fusion_ic_min_periods`、`factor_weight_train_ratio`、`rolling_factor_weight_*`、`persist_run_outputs`、动量/波动/财务窗口等；`get_tushare_token()`（环境变量优先，本地回退**勿提交密钥**）。 |
+| `main.py` | 入口：加载本地 demo / Tushare 缓存 / 股票池 Tushare 数据 → `build_four_factor_panel` → 数据质量报告 → 可选 `save_run_cache` → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议、训练段权重与滚动权重日志 → 可选 `save_ic_series` 与 **IC/权重 PNG** → 多列因子各 `run_single_backtest(..., factor_values=列, long_prices=long_df)` → 可交易性过滤与决策审计 → **`_build_fused_zscore_panel`（IC 列权或等权）** + **`fuse_static_weight_zscore`（训练段静态权重）** + **调仓日前滚动综合权重** → `run_multi_backtest(fused=..., long_prices=long_df)` → 股票池等权基准与超额指标 → 换手与成本 → 风险暴露与集中度 → 绩效汇总 / 调仓日志 / 决策审计日志 / 换手日志 / 集中度日志 / 配置快照落盘 → `plot_nav`。 |
+| `data/` | 原始/演示数据；存在 `prices_demo.csv` 时优先读本地；真实股票池可放 `stock_pool.xlsx`，Tushare 日线缓存默认 `prices_tushare_cache.csv`。 |
 | `live/data_feed.py` | `fetch_daily_panel`、`fetch_fina_indicator_panel`、`load_prices_from_csv` 等。 |
+| `live/stock_pool.py` | `load_stock_pool`、`normalize_ts_code`：读取 Excel/CSV 股票池并规范化 Tushare 代码。 |
 | `live/cache_io.py` | `save_run_cache` → `output/cache/` 行情、原始因子面板与标准化因子面板；`save_data_quality_reports`、`save_factor_diagnostics`、`save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_order_plans`、`save_order_checks`、`save_paper_trades`、`save_risk_exposure_logs`、`save_risk_exposure_summary` → 实验运行记录。 |
 | `live/account_state.py` | `save_account_state`、`load_account_state`、`positions_from_trades`：保存 / 读取纸面账户现金、持仓和每日快照。 |
 | `live/order_builder.py` | `build_order_plan`、`build_order_plan_from_rebalance_meta`：把目标权重转换成买卖股数和预估金额，是订单预检查、纸面交易和券商接口之前的准实盘准备层。 |
@@ -138,8 +139,9 @@
 |------|------|-----------|
 | 1 | 读配置并打印 `portfolio_weighting` | `get_settings()` |
 | 2a | 若存在 `data/prices_demo.csv` | `load_prices_from_csv` → `long_to_wide` → `prices` |
-| 2b | 否则 Tushare | `fetch_daily_panel(main._DEFAULT_TS_SYMBOLS, ...)` → `long_to_wide` |
-| 2c | 失败则合成宽表 | `_demo_price_wide()`，`wide_to_long` → `long_df` |
+| 2b | 否则若存在 Tushare 行情缓存 | `load_prices_from_csv(settings.tushare_price_cache_path)` → `long_to_wide` |
+| 2c | 否则读取股票池并拉取 Tushare | `load_stock_pool(settings.stock_pool_path)` → `fetch_daily_panel(...)` → 写行情缓存 → `long_to_wide` |
+| 2d | 股票池不存在则使用默认示例股票；失败则合成宽表 | `_DEFAULT_TS_SYMBOLS` / `_demo_price_wide()`，`wide_to_long` → `long_df` |
 | 3 | 构建多因子面板 | `build_four_factor_panel(prices, long_df, settings)` → `panel` |
 | 4 | 数据质量报告 | `price_coverage`、`factor_coverage`、`rebalance_coverage` |
 | 5 | 因子预处理与可选落盘 | `preprocess_factor_panel`、`save_run_cache`（`persist_run_outputs`） |
@@ -225,7 +227,7 @@
 
 ## 7. 默认股票池与因子列表（`main.py`）
 
-- **股票池**：`_DEFAULT_TS_SYMBOLS`（8 只，可按权限与标的修改）。
+- **股票池**：优先 `Settings.stock_pool_path`（默认 `data/stock_pool.xlsx`，可用 `QUANT_STOCK_POOL_PATH` 指向本机文件）；缺失时才使用 `_DEFAULT_TS_SYMBOLS` 示例股票池。
 - **因子循环顺序**：`factors.panel_builder.DEFAULT_FACTOR_ORDER`：`MOMENTUM` → `MOMENTUM_60D` → `REVERSAL_5D` → `VOLATILITY` → `VOLUME_RATIO_20D` → `PE` → `ROE`（与 `main` 中 IC/回测循环一致）。
 
 ---
