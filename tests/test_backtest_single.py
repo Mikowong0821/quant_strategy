@@ -73,6 +73,14 @@ class TestWeightsForRebalance(unittest.TestCase):
         dates = _rebalance_dates(prices, settings)
         self.assertIn(pd.Timestamp("2026-06-17"), dates)
 
+    def test_rebalance_dates_uses_last_trading_day_of_month(self) -> None:
+        prices = pd.DataFrame(
+            {"AAA": np.linspace(1.0, 2.0, 22)},
+            index=pd.bdate_range("2025-05-01", "2025-05-30"),
+        )
+        dates = _rebalance_dates(prices, get_settings())
+        self.assertEqual(list(dates), [pd.Timestamp("2025-05-30")])
+
     def test_target_weight_lists_prefers_selected_then_previous(self) -> None:
         picks, weights = _target_weight_lists(
             {"OLD": 0.25, "NEW": 0.75},

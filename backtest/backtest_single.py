@@ -27,7 +27,9 @@ def _resample_freq_alias(freq: str) -> str:
 def _rebalance_dates(prices_wide: pd.DataFrame, settings: Any) -> pd.DatetimeIndex:
     """返回调仓日；可选把样本最后一个交易日也纳入调仓日。"""
     rf = _resample_freq_alias(settings.rebalance_freq)
-    dates = prices_wide.resample(rf).last().index.intersection(prices_wide.index)
+    if prices_wide.empty:
+        return pd.DatetimeIndex([])
+    dates = pd.DatetimeIndex(prices_wide.resample(rf).apply(lambda x: x.index[-1]).iloc[:, 0])
     if bool(getattr(settings, "force_final_rebalance", False)) and len(prices_wide.index) > 0:
         dates = dates.union(pd.DatetimeIndex([prices_wide.index[-1]]))
     return dates.sort_values()

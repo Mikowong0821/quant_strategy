@@ -26,6 +26,7 @@ flowchart LR
   sig[live/signal_system]
   order[live/order_builder]
   precheck[live/order_precheck]
+  broker[live/broker]
   paper[live/paper_trading]
   state[live/account_state]
   runner[live/paper_runner]
@@ -60,9 +61,11 @@ flowchart LR
   bt --> plot
   bt --> order
   order --> precheck
+  precheck --> broker
   fac --> opt
   opt --> sig
   precheck --> paper
+  broker --> paper
   paper --> state
   state --> runner
   cli --> control
@@ -167,25 +170,26 @@ flowchart LR
 | 文件 | 作用 |
 |------|------|
 | `data_feed.py` | **行情接入**：Tushare/AkShare 拉取或读本地 CSV，输出列名与契约对齐，供因子与回测使用。 |
-| `stock_pool.py` | **股票池读取**：从 Excel/CSV 读取股票代码，规范化为 Tushare `ts_code`，让主流程摆脱硬编码示例股票。 |
+| `stock_pool.py` | **股票池管理与实盘目标池确认**：从 Excel/CSV 读取人工研究池，规范化 Tushare `ts_code`，保留简称、主题、子行业、启用状态；基于价格覆盖、最新价格、流动性和停牌 / 涨跌停状态生成过滤报告与 active universe。 |
 | `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、因子诊断、训练段权重、滚动权重日志、运行配置、绩效汇总、调仓日志、换手日志、订单计划、订单预检查结果、纸面交易日志、集中度日志等，形成可复现实验档案。 |
 | `account_state.py` | **纸面账户状态**：保存 / 读取虚拟账户现金、持仓和每日快照，让纸面交易可以跨天连续运行。 |
 | `order_builder.py` | **订单生成**：把目标权重、当前持仓、现金 / 总资产和最新价格转换成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。只生成订单计划，不连接券商、不模拟成交。 |
 | `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌和涨跌停约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
+| `broker.py` | **统一券商接口协议**：定义 `BrokerAdapter`、`BrokerAccount`、`BrokerPosition`、`BrokerOrder`、`SimulatedBroker` 与 `RealBrokerReadOnlyAdapter`，把查资金、查持仓、查订单、下单、撤单抽象成统一方法。模拟券商用于验证协议；真实券商先用只读 adapter 验证账户、持仓和订单读取。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
-| `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、纸面成交、持仓更新、账户快照和落盘，是后续自动调度和券商适配前的一日运行入口。 |
-| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、账户快照、订单、阻断原因、成交、持仓和输出文件路径。 |
+| `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、执行模式选择、成交回报兼容、持仓更新、账户快照和落盘；默认走旧纸面成交，也可通过 `simulated_broker` 走统一券商接口。 |
+| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
 | `paper_guard.py` | **运行失败 / 异常检查**：在日终纸面运行前后检查目标权重、价格、日期、现金、持仓、订单检查和成交日志；ERROR 阻断，WARNING 进入摘要和日报。 |
 | `paper_run_control.py` | **交易日日历 / 重复运行保护**：从价格缓存提取交易日日历，默认阻断非交易日运行；检查同日纸面账户快照，默认阻断重复覆盖。 |
 | `paper_scheduler.py` | **每日调度封装**：运行一次日终纸面交易并记录 stdout、stderr、参数和退出码，供 cron / launchd / 服务器调度器调用。 |
-| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报。 |
+| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报；支持 `--execution-mode simulated_broker`。 |
 
 ## 8.1 `scripts/`：日常运行入口
 
 | 文件 | 作用 |
 |------|------|
-| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
+| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--execution-mode`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
 | `run_scheduled_daily_paper.py` | **每日调度入口**：薄命令行入口，调用 `live.paper_scheduler.run_scheduled_daily_paper`，把未识别参数透传给日终纸面交易 CLI，并写 `output/scheduler_logs/<date>.log`。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。

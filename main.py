@@ -315,7 +315,9 @@ def _constrain_factor_weights(
 
 def _last_rebalance_dates(prices: pd.DataFrame, settings: Settings) -> pd.DatetimeIndex:
     rf = _resample_freq_alias(settings.rebalance_freq)
-    dates = prices.resample(rf).last().index.intersection(prices.index)
+    if prices.empty:
+        return pd.DatetimeIndex([])
+    dates = pd.DatetimeIndex(prices.resample(rf).apply(lambda x: x.index[-1]).iloc[:, 0])
     if bool(getattr(settings, "force_final_rebalance", False)) and len(prices.index) > 0:
         dates = dates.union(pd.DatetimeIndex([prices.index[-1]]))
     return dates.sort_values()

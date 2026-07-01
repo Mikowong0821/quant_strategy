@@ -101,6 +101,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     trades = result["paper_trades"]
     positions = result["positions"]
     snapshot = result["account_snapshot"]
+    broker_orders = result.get("broker_orders", pd.DataFrame())
+    execution_mode = str(result.get("execution_mode", "paper_trading"))
     previous = _read_previous_snapshot(result)
 
     n_orders = int(len(orders))
@@ -116,6 +118,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
         "## 运行摘要",
         "",
         "- 策略：`%s`" % strategy,
+        "- 执行模式：`%s`" % execution_mode,
         "- 运行日期：%s" % trade_date,
         "- 目标权重日期：%s" % target_date,
         "- 价格日期：%s" % price_date,
@@ -182,6 +185,13 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
                 trades,
                 ["symbol", "side", "qty", "price", "gross_amount", "commission", "cash_after", "fill_status", "fill_reason"],
                 ["标的", "方向", "数量", "价格", "成交金额", "手续费", "成交后现金", "状态", "原因"],
+            ),
+            "## 券商订单回报",
+            "",
+            _markdown_table(
+                broker_orders,
+                ["symbol", "side", "qty", "price", "status", "reason", "filled_qty", "avg_price", "cash_after"],
+                ["标的", "方向", "数量", "价格", "状态", "原因", "成交数量", "均价", "成交后现金"],
             ),
             "## 当前持仓",
             "",

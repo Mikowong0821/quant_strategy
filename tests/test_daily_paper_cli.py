@@ -79,6 +79,39 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertTrue((settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md").is_file())
             self.assertIn("paper_report", result["paths"])
 
+    def test_run_from_outputs_can_use_simulated_broker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                execution_mode="simulated_broker",
+            )
+            summary = format_daily_paper_summary(result)
+
+            self.assertIn("execution_mode=simulated_broker", summary)
+            self.assertEqual(list(result["broker_orders"]["status"]), ["FILLED"])
+            self.assertAlmostEqual(result["cash"], 5_000.0)
+
     def test_run_control_blocks_non_trading_day_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(

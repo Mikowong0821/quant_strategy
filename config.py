@@ -86,6 +86,10 @@ class Settings:
     order_cash_buffer: float = 0.0
     # 纸面交易：虚拟账户默认初始资金。
     paper_initial_cash: float = 1_000_000.0
+    # 券商接入：默认只使用模拟链路；真实券商先从 real_readonly 做只读验证。
+    broker_mode: str = "simulated"
+    broker_provider: str = ""
+    broker_account_id: str = ""
     optimizer_return_window: int = 60
     optimizer_min_obs: int = 15
 
@@ -101,6 +105,9 @@ def get_settings() -> Settings:
     tushare_cache = Path(cache_env).expanduser() if cache_env else data_dir / "prices_tushare_cache.csv"
     start = os.environ.get("QUANT_BACKTEST_START", "").strip() or Settings.backtest_start
     end = os.environ.get("QUANT_BACKTEST_END", "").strip() or Settings.backtest_end
+    broker_mode = os.environ.get("QUANT_BROKER_MODE", "").strip() or Settings.broker_mode
+    broker_provider = os.environ.get("QUANT_BROKER_PROVIDER", "").strip() or Settings.broker_provider
+    broker_account_id = os.environ.get("QUANT_BROKER_ACCOUNT_ID", "").strip() or Settings.broker_account_id
     force_final_rebalance = os.environ.get("QUANT_FORCE_FINAL_REBALANCE", "").strip().lower() in {
         "1",
         "true",
@@ -116,6 +123,9 @@ def get_settings() -> Settings:
         backtest_start=start,
         backtest_end=end,
         force_final_rebalance=force_final_rebalance,
+        broker_mode=broker_mode,
+        broker_provider=broker_provider,
+        broker_account_id=broker_account_id,
     )
 
 

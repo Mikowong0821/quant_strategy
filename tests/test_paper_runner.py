@@ -88,6 +88,32 @@ class TestPaperRunner(unittest.TestCase):
             self.assertAlmostEqual(result["cash"], 10_000.0)
             self.assertTrue(result["paths"]["account_state"]["snapshots"].is_file())
 
+    def test_daily_runner_can_execute_through_simulated_broker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+
+            result = run_daily_paper_trade(
+                settings,
+                strategy="BROKER_MODE",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+                execution_mode="simulated_broker",
+            )
+
+            self.assertEqual(result["execution_mode"], "simulated_broker")
+            self.assertEqual(list(result["broker_orders"]["status"]), ["FILLED"])
+            self.assertEqual(list(result["paper_trades"]["fill_status"]), ["FILLED"])
+            self.assertAlmostEqual(result["cash"], 5_000.0)
+            self.assertEqual(list(result["positions"]["symbol"]), ["AAA"])
+            self.assertEqual(float(result["positions"].loc[0, "shares"]), 500.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -120,12 +120,35 @@
 | `live.account_state` | `save_account_state(settings, strategy, cash, positions, snapshot=None, trade_date=None)` | 纸面账户现金、持仓、账户快照、日期 | 写 `output/paper_account/<strategy>/account.csv`、`positions.csv`、`snapshots.csv` |
 | `live.account_state` | `load_account_state(settings, strategy, default_cash=0.0)` | 策略名与默认现金 | 返回 `(cash, positions_df)`；状态不存在时返回默认现金和空持仓 |
 | `live.account_state` | `positions_from_trades(trades, current_positions=None, updated_at=None)` | 纸面交易日志和初始持仓 | 最新持仓 DataFrame，列含 `symbol/shares/available_shares/updated_at` |
-| `live.paper_runner` | `run_daily_paper_trade(settings, strategy, target_weights, latest_prices, trade_date, ...)` | `Settings`、策略名、目标权重、最新价格、交易日期、可选交易状态；内部读取纸面账户状态 | 单日纸面运行结果 dict，含订单计划、订单预检查、纸面交易日志、最新现金、最新持仓、账户快照与落盘路径 |
-| `live.paper_report` | `build_daily_paper_report(result)`、`save_daily_paper_report(settings, result)` | 单日纸面运行结果 dict；可读取 `paper_account/<strategy>/snapshots.csv` 计算上一快照变化 | Markdown 日报文本或 `output/paper_reports/<strategy>/<date>.md` |
+| `live.paper_runner` | `run_daily_paper_trade(settings, strategy, target_weights, latest_prices, trade_date, execution_mode=..., ...)` | `Settings`、策略名、目标权重、最新价格、交易日期、可选交易状态；内部读取纸面账户状态；执行模式支持 `paper_trading` / `simulated_broker` | 单日纸面运行结果 dict，含订单计划、订单预检查、券商订单回报、纸面交易日志、最新现金、最新持仓、账户快照与落盘路径 |
+| `live.paper_report` | `build_daily_paper_report(result)`、`save_daily_paper_report(settings, result)` | 单日纸面运行结果 dict；可读取 `paper_account/<strategy>/snapshots.csv` 计算上一快照变化 | Markdown 日报文本或 `output/paper_reports/<strategy>/<date>.md`；若存在 `broker_orders`，会展示统一券商订单回报 |
 | `live.paper_guard` | `validate_daily_inputs(...)`、`validate_daily_result(result)`、`raise_on_guard_errors(issues)` | 目标权重、最新价格、运行日期、目标权重日期、价格日期、单日纸面运行结果 dict | `GuardIssue` 列表；ERROR 级问题可抛出 `DailyPaperGuardError`，WARNING 级问题供摘要和日报展示 |
 | `live.paper_run_control` | `load_trading_calendar_from_prices(path)`、`validate_daily_run_control(...)`、`has_paper_snapshot(...)` | 价格宽表缓存、策略名、运行日期、交易日日历、是否允许非交易日和重复运行 | 非交易日或重复运行时抛出 `DailyPaperRunControlError`；只读运行 `persist_outputs=False` 不阻断重复快照 |
-| `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV，可选关闭日报、guard 或 run control | 调用运行控制、异常检查与 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交、账户状态和 Markdown 日报 |
+| `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV，可选关闭日报、guard 或 run control，可选 `--execution-mode simulated_broker` | 调用运行控制、异常检查与 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交、账户状态和 Markdown 日报 |
 | `live.paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | `run_scheduled_daily_paper(settings, daily_args=None, log_date=None)` / CLI | `Settings`、可选日志日期、透传给日终纸面交易的 CLI 参数 | 执行一次日终纸面交易，写 `output/scheduler_logs/<date>.log`，返回/退出码与日终纸面交易一致 |
+| `live.broker` | `BrokerAdapter` 协议 | 真实券商 / 模拟券商实现统一方法：`sync/get_account/get_cash/get_positions/get_orders/submit_order/cancel_order` | 交易适配器标准插座；上层不依赖具体券商 API |
+| `live.broker` | `SimulatedBroker` | 初始现金、当前持仓、最新价格、手续费率；可单笔 `submit_order`，也可 `submit_order_plan(order_plan, order_checks=...)` | 模拟立即成交，返回统一 `BrokerOrder` / 订单表；用于验证券商接口协议，不连接真实券商 |
+| `live.broker` | `RealBrokerConfig`、`RealBrokerReadOnlyAdapter` | 券商名、账户标识、只读模式；可注入账户 / 持仓 / 订单快照，未来真实券商 adapter 可覆盖 `sync` | 真实券商只读接入骨架；允许查询账户、持仓、订单，禁止 `submit_order/cancel_order` |
+
+### 4.1 统一券商接口字段
+
+| 数据结构 | 字段 |
+|---|---|
+| `BrokerAccount` | `cash`、`market_value`、`total_asset`、`updated_at` |
+| `BrokerPosition` | `symbol`、`shares`、`available_shares`、`market_value`、`price`、`updated_at` |
+| `BrokerOrder` | `order_id`、`date`、`symbol`、`side`、`qty`、`price`、`status`、`reason`、`filled_qty`、`avg_price`、`gross_amount`、`commission`、`cash_after`、`position_after`、`submitted_at` |
+
+`status` 当前约定为 `NEW`、`FILLED`、`REJECTED`、`CANCELLED`。真实券商 adapter 可在内部映射券商原始状态，但暴露给本工程时应转换为上述统一状态或兼容扩展状态。
+
+### 4.2 券商模式
+
+| 模式 | 含义 |
+|------|------|
+| `simulated` | 默认模拟模式，不连接真实券商 |
+| `real_readonly` | 真实券商只读模式，只允许查资金、查持仓、查订单 |
+| `real_trading` | 预留真实交易模式；开启前必须完成只读验证、人工确认和更严格风控 |
+
+`RealBrokerReadOnlyAdapter` 固定只接受 `real_readonly`，收到 `submit_order` 或 `cancel_order` 会抛出 `BrokerReadOnlyError`。
 
 ---
 
@@ -165,6 +188,9 @@
 | `min_positions` / `min_positions_exposure` | 最小有效目标持仓数；不足时把股票总仓位缩到该 exposure，剩余保留现金 |
 | `order_lot_size` / `min_order_amount` / `order_cash_buffer` | 订单生成 / 预检查使用的最小交易单位、最小订单金额与买入后现金缓冲；A 股默认 `order_lot_size=100` |
 | `paper_initial_cash` | 纸面交易虚拟账户默认初始资金 |
+| `broker_mode` | 券商模式，默认 `simulated`；真实接入先使用 `real_readonly` |
+| `broker_provider` | 券商提供方名称，例如 `qmt`、`ptrade`；不存放账号密码 |
+| `broker_account_id` | 非敏感账户标识；真实密钥、密码、Token 不应写入仓库 |
 | `max_rebalance_turnover` | 单次再平衡目标权重变化上限；默认 `1.0`，首次建仓不节流，`0` 表示关闭 |
 | `liquidity_lookback_days` | 可交易性过滤使用的成交量 / 成交额均值窗口 |
 | `min_avg_volume` / `min_avg_amount` | Top-K 前的最小平均成交量 / 成交额过滤；默认 `0` 表示关闭 |
@@ -173,6 +199,15 @@
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `ic_rolling_windows` | IC 稳定性诊断窗口；默认 `(20, 60)`，用于滚动均值、滚动波动、滚动正值比例 |
 | `factor_group_count` | 因子分组收益诊断的分组数；默认 `5`，`G1` 为低分组，`G5` 为高分组 |
+
+### 6.2 股票池管理与实盘目标池确认
+
+| 函数 / 脚本 | 输入 | 输出 | 说明 |
+|---|---|---|---|
+| `live.stock_pool.load_stock_pool_frame` | Excel/CSV 股票池，含 `股票代码`，可选 `股票简称`、`主题`、`子行业`、`是否启用` | 标准化 DataFrame：`symbol/name/theme/sub_industry/enabled/raw_symbol/source_path` | 保留人工研究池元信息 |
+| `live.stock_pool.build_stock_pool_filter_report` | 股票池 DataFrame、价格数据、可选交易状态、日期、覆盖率/流动性阈值 | 逐股票过滤报告：`active/exclude_reason/latest_price/price_coverage/avg_volume/avg_amount/is_suspended/is_limit_up/is_limit_down` | 把人工研究池过滤成当日可用池 |
+| `live.stock_pool.active_universe_from_report` | 过滤报告 | active universe DataFrame | 只保留 `active=True` 的股票 |
+| `scripts/build_live_universe.py` | `--stock-pool`、`--prices`、可选 `--trade-status`、`--trade-date` | `output/live_universe/.../stock_pool_filter_report_<date>.csv` 与 `active_universe_<date>.csv` | 券商接口前的目标池确认入口 |
 | `fusion_use_ic_weights` | `True`（默认）时融合用 `fuse_ic_weighted_zscore`；`False` 时用等权 `fuse_equal_weight_zscore` |
 | `fusion_ic_rolling_window` / `fusion_ic_min_periods` | IC 列权：对 `ic.shift(1)` 做 rolling 均值时的窗口与最少样本数 |
 | `factor_weight_train_ratio` | 静态综合权重融合的训练样本占比；训练段计算 `fusion_weight`，验证段生成 `FUSED_SCORE_WEIGHTED` |

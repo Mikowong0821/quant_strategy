@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户模拟成交、保存纸面账户状态、生成日报、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口，但尚不连接券商。
+本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成日报、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
 
 ---
 
@@ -141,7 +141,11 @@ flowchart TB
         ORDERS --> OPC["live/order_precheck<br/>现金 / 可卖数量 / 手数 / 停牌涨跌停"]
         OPC --> CHECKS["订单检查结果<br/>PASS / BLOCK / reason"]
         CHECKS --> CHECKCSV["live/cache_io.save_order_checks<br/>output/order_checks/*.csv"]
-        CHECKS --> PAPER["live/paper_trading<br/>虚拟账户模拟成交"]
+        CHECKS --> MODE{"execution_mode"}
+        MODE --> BROKER["live/broker<br/>统一券商接口 / SimulatedBroker"]
+        BROKER --> BORDER["统一订单回报<br/>FILLED / REJECTED / CANCELLED"]
+        BORDER --> PTRADES
+        MODE --> PAPER["live/paper_trading<br/>虚拟账户模拟成交"]
         PAPER --> PTRADES["成交 / 跳过日志<br/>FILLED / SKIPPED / cash / position"]
         PTRADES --> PTRADESCVS["live/cache_io.save_paper_trades<br/>output/paper_trades/*.csv"]
         PTRADES --> ASTATE["live/account_state<br/>保存现金 / 持仓 / 快照"]
@@ -181,14 +185,16 @@ flowchart TB
 | 17 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
 | 18 | `live/order_builder` | 读取目标权重、当前持仓、最新价格、现金 / 总资产，按手数和最小订单金额生成订单计划 | 把研究层的“目标权重”转成准实盘层的“买卖多少股” |
 | 19 | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
-| 20 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
-| 21 | `live/account_state` | 保存和读取纸面账户现金、持仓与每日快照 | 让纸面交易能跨天连续运行，而不是每次从初始资金重启 |
-| 22 | `live/paper_runner` | 读取账户状态，串联订单生成、预检查、纸面成交、持仓更新、账户快照与 CSV 落盘 | 把多个准实盘零件收束成“每天运行一次”的可调用入口 |
-| 23 | `scripts/run_daily_paper.py` | 从 `output/rebalance_logs/<strategy>.csv` 读取最近目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用 `run_daily_paper_trade` | 把函数入口变成可手动运行、后续可被定时任务调用的日终命令 |
-| 24 | `live/paper_report` | 将单日纸面运行结果整理成 Markdown 日报 | 每天跑完后可以直接复盘订单、阻断、成交、持仓和账户变化 |
-| 25 | `live/paper_guard` | 在日终纸面运行前检查目标权重、价格、日期，在运行后检查现金、持仓、订单检查和成交日志 | 把“看起来跑完了但输入/结果异常”的情况显式暴露；ERROR 阻断，WARNING 进入摘要和日报 |
-| 26 | `live/paper_run_control` | 从价格缓存提取交易日日历，检查运行日是否为交易日，并检查同日纸面账户快照是否已存在 | 防止周末/节假日误写新快照，也防止重复运行无意覆盖账户状态 |
-| 27 | `live/paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | 运行一次日终纸面交易，记录调度参数、stdout、stderr 和退出码 | 让 cron / launchd / 服务器调度器有稳定入口，也让失败有可查日志 |
+| 20 | `live/broker` | 定义 `BrokerAdapter`、`SimulatedBroker`、`RealBrokerReadOnlyAdapter`，统一查资金、查持仓、查订单、下单、撤单 | 给纸面、模拟和未来真实券商一个共同接口；真实券商先用只读 adapter 验证查询能力 |
+| 21 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
+| 22 | `live/account_state` | 保存和读取纸面账户现金、持仓与每日快照 | 让纸面交易能跨天连续运行，而不是每次从初始资金重启 |
+| 23 | `live/stock_pool` + `scripts/build_live_universe.py` | 从人工研究池、价格缓存和交易状态生成过滤报告与 `active_universe_<date>.csv` | 在券商接口前确认“今天系统允许在哪些股票里选”，避免直接拿人工池下单 |
+| 24 | `live/paper_runner` | 读取账户状态，串联订单生成、预检查、执行模式选择、成交回报兼容、持仓更新、账户快照与 CSV 落盘 | 把多个准实盘零件收束成“每天运行一次”的可调用入口；可选通过 `SimulatedBroker` 执行 |
+| 25 | `scripts/run_daily_paper.py` | 从 `output/rebalance_logs/<strategy>.csv` 读取最近目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用 `run_daily_paper_trade` | 把函数入口变成可手动运行、后续可被定时任务调用的日终命令；支持 `--execution-mode simulated_broker` |
+| 26 | `live/paper_report` | 将单日纸面运行结果整理成 Markdown 日报 | 每天跑完后可以直接复盘订单、阻断、成交、券商订单回报、持仓和账户变化 |
+| 27 | `live/paper_guard` | 在日终纸面运行前检查目标权重、价格、日期，在运行后检查现金、持仓、订单检查和成交日志 | 把“看起来跑完了但输入/结果异常”的情况显式暴露；ERROR 阻断，WARNING 进入摘要和日报 |
+| 28 | `live/paper_run_control` | 从价格缓存提取交易日日历，检查运行日是否为交易日，并检查同日纸面账户快照是否已存在 | 防止周末/节假日误写新快照，也防止重复运行无意覆盖账户状态 |
+| 29 | `live/paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | 运行一次日终纸面交易，记录调度参数、stdout、stderr 和退出码 | 让 cron / launchd / 服务器调度器有稳定入口，也让失败有可查日志 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -209,11 +215,12 @@ flowchart TB
 - **最小持仓数量（`min_positions`）**：默认 0 表示关闭；若有效目标持仓数少于阈值，则把股票总仓位缩到 `min_positions_exposure`，剩余保留现金，避免可交易标的不足时硬满仓。
 - **订单计划（`live.order_builder`）**：回测结束后，可把最近一期 `rebalance_log` 中的 `picks/weights` 视为目标权重，再结合当前持仓、现金 / 总资产和最新价格，生成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。该层只做订单计划，不做券商下单、不做成交回报。
 - **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
+- **统一券商接口（`live.broker`）**：定义 `BrokerAdapter` 协议和 `BrokerAccount` / `BrokerPosition` / `BrokerOrder` 数据结构，让上层只关心查资金、查持仓、查订单、下单和撤单。`SimulatedBroker` 用同一协议做立即成交模拟；`RealBrokerReadOnlyAdapter` 固定只读，可查询账户、持仓和订单快照，但会阻断下单和撤单；未来接 QMT、PTrade 或其他券商时，只需要实现同一协议。
 - **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
 - **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
-- **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、纸面成交、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。它仍不连接券商，但已经具备“今天给我目标权重和最新价格，我跑完纸面账户并保存结果”的入口形态。
-- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
-- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、账户快照、较上一快照变化、今日订单、被阻断订单、纸面成交、当前持仓和输出文件。
+- **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、执行模式选择、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。默认 `execution_mode="paper_trading"` 沿用旧纸面成交；切到 `execution_mode="simulated_broker"` 时，订单会先进入 `SimulatedBroker`，再转换为兼容的 `paper_trades`，让日报和账户状态继续复用。
+- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
+- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
 - **运行失败 / 异常检查（`live.paper_guard`）**：默认随日终脚本启用。目标权重为空、价格缺失、价格无效、目标权重日期或价格日期晚于运行日、运行后现金为负等属于 ERROR；价格日期过旧、所有订单被阻断、成交层全部跳过等属于 WARNING。
 - **交易日日历 / 重复运行保护（`live.paper_run_control`）**：默认随日终脚本启用。交易日日历来自 `prices_wide_close.csv` 的日期列；显式指定非交易日会被阻断，除非使用 `--allow-non-trading-day`。同一策略同一日期已有 `snapshots.csv` 记录时会被阻断，除非使用 `--allow-rerun`。
 - **每日调度入口（`live.paper_scheduler` / `scripts/run_scheduled_daily_paper.py`）**：不在 Python 内部常驻循环，而是包装一次日终纸面交易并记录 `output/scheduler_logs/<date>.log`。系统层可以用 cron / launchd / 服务器任务调度器按固定时间调用它。
@@ -293,6 +300,8 @@ flowchart TB
 | `output/turnover_compare.png` | 各策略逐期换手率对比图 |
 | `output/risk_exposure/concentration_logs/<strategy>.csv` | 各策略逐次调仓集中度：`hhi`, `effective_n`, `top1_weight`, `top3_weight`, `n_positions` 等 |
 | `output/risk_exposure/concentration_summary.csv` | 各策略集中度汇总：平均/最小 effective_n、最大 HHI、Top 权重等 |
+| `output/live_universe/stock_pool_filter_report_<date>.csv` | 实盘前股票池过滤报告：代码规范化、启用状态、价格覆盖、最新价格、流动性、停牌 / 涨跌停和剔除原因 |
+| `output/live_universe/active_universe_<date>.csv` | 当日实盘目标池确认文件，只保留通过过滤的股票，供后续策略运行、纸面交易和券商接口读取 |
 | `output/risk_exposure/effective_n_compare.png` | 各策略 effective_n 对比图 |
 
 ---

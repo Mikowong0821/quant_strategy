@@ -156,6 +156,7 @@ def run_daily_paper_from_outputs(
     run_control: bool = True,
     allow_non_trading_day: bool = False,
     allow_rerun: bool = False,
+    execution_mode: str = "paper_trading",
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -207,6 +208,7 @@ def run_daily_paper_from_outputs(
         trade_date=run_date,
         trade_status=trade_status,
         persist_outputs=persist_outputs,
+        execution_mode=execution_mode,
     )
     result["input_paths"] = {
         "rebalance_log": rebalance_path,
@@ -244,6 +246,7 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     lines = [
         "每日纸面交易完成",
         "strategy=%s" % result["strategy"],
+        "execution_mode=%s" % result.get("execution_mode", "paper_trading"),
         "trade_date=%s target_date=%s price_date=%s"
         % (
             pd.Timestamp(result["trade_date"]).strftime("%Y-%m-%d"),
@@ -288,6 +291,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-run-control", action="store_true", help="跳过交易日日历和重复运行保护")
     parser.add_argument("--allow-non-trading-day", action="store_true", help="允许在非交易日强制运行")
     parser.add_argument("--allow-rerun", action="store_true", help="允许覆盖同一交易日已有纸面账户快照")
+    parser.add_argument(
+        "--execution-mode",
+        default="paper_trading",
+        choices=["paper_trading", "simulated_broker"],
+        help="执行模式：paper_trading 使用旧纸面成交；simulated_broker 使用统一模拟券商适配器",
+    )
     return parser
 
 
@@ -308,6 +317,7 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             run_control=not args.no_run_control,
             allow_non_trading_day=args.allow_non_trading_day,
             allow_rerun=args.allow_rerun,
+            execution_mode=args.execution_mode,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
         print(str(exc), file=sys.stderr)
