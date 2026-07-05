@@ -8,6 +8,13 @@ import pandas as pd
 
 from backtest.backtest_utils import long_to_wide, prices_to_wide_close, to_returns, wide_to_long
 from config import Settings
+from factors.factor_finance import (
+    calc_gross_margin,
+    calc_low_debt_to_assets,
+    calc_net_margin,
+    calc_profit_growth,
+    calc_revenue_growth,
+)
 from factors.factor_momentum import calc_momentum
 from factors.factor_pe import calc_pe
 from factors.factor_reversal import calc_reversal
@@ -24,6 +31,11 @@ DEFAULT_FACTOR_ORDER = [
     "VOLUME_RATIO_20D",
     "PE",
     "ROE",
+    "GROSS_MARGIN",
+    "NET_MARGIN",
+    "LOW_DEBT_TO_ASSETS",
+    "REVENUE_GROWTH",
+    "PROFIT_GROWTH",
 ]
 
 
@@ -38,6 +50,25 @@ def _volume_wide_from_long(long_df: pd.DataFrame | None) -> pd.DataFrame | None:
         return long_to_wide(long_df, "volume")
     except Exception:
         return None
+
+
+def _safe_finance_factor(func, fina: pd.DataFrame, long_px: pd.DataFrame, index: pd.MultiIndex) -> pd.Series:
+    try:
+        out = func(fina, long_px)
+    except Exception:
+        return pd.Series(index=index, dtype=float)
+    if out.empty:
+        return pd.Series(index=index, dtype=float)
+    return out.reindex(index)
+
+
+def _align_factor(series: pd.Series, index: pd.MultiIndex) -> pd.Series:
+    if series.empty:
+        return pd.Series(index=index, dtype=float)
+    out = series.copy()
+    if isinstance(out.index, pd.MultiIndex):
+        out.index = out.index.set_names(["date", "symbol"])
+    return out.reindex(index)
 
 
 def build_four_factor_panel(
@@ -86,6 +117,12 @@ def build_four_factor_panel(
             volume_wide,
             window=getattr(settings, "volume_ratio_window", 20),
         )
+    idx = mom.index
+    mom = _align_factor(mom, idx)
+    mom_long = _align_factor(mom_long, idx)
+    reversal = _align_factor(reversal, idx)
+    vol = _align_factor(vol, idx)
+    volume_ratio = _align_factor(volume_ratio, idx)
 
     try:
         fina = fetch_fina_indicator_panel(
@@ -97,12 +134,21 @@ def build_four_factor_panel(
     except Exception:
         fina = pd.DataFrame()
     if fina.empty:
-        idx = mom.index
         pe = pd.Series(index=idx, dtype=float)
         roe = pd.Series(index=idx, dtype=float)
+        gross_margin = pd.Series(index=idx, dtype=float)
+        net_margin = pd.Series(index=idx, dtype=float)
+        low_debt = pd.Series(index=idx, dtype=float)
+        revenue_growth = pd.Series(index=idx, dtype=float)
+        profit_growth = pd.Series(index=idx, dtype=float)
     else:
-        pe = calc_pe(fina, long_px)
-        roe = calc_roe(fina, long_px)
+        pe = _safe_finance_factor(calc_pe, fina, long_px, idx)
+        roe = _safe_finance_factor(calc_roe, fina, long_px, idx)
+        gross_margin = _safe_finance_factor(calc_gross_margin, fina, long_px, idx)
+        net_margin = _safe_finance_factor(calc_net_margin, fina, long_px, idx)
+        low_debt = _safe_finance_factor(calc_low_debt_to_assets, fina, long_px, idx)
+        revenue_growth = _safe_finance_factor(calc_revenue_growth, fina, long_px, idx)
+        profit_growth = _safe_finance_factor(calc_profit_growth, fina, long_px, idx)
 
     panel = pd.concat(
         {
@@ -113,6 +159,11 @@ def build_four_factor_panel(
             "VOLUME_RATIO_20D": volume_ratio,
             "PE": pe,
             "ROE": roe,
+            "GROSS_MARGIN": gross_margin,
+            "NET_MARGIN": net_margin,
+            "LOW_DEBT_TO_ASSETS": low_debt,
+            "REVENUE_GROWTH": revenue_growth,
+            "PROFIT_GROWTH": profit_growth,
         },
         axis=1,
     )

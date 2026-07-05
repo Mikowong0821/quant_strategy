@@ -25,6 +25,7 @@ from live.paper_run_control import (
     load_trading_calendar_from_prices,
     validate_daily_run_control,
 )
+from live.manual_confirmation import load_factor_decay_monitor, save_manual_confirmation
 from live.paper_runner import run_daily_paper_trade
 from live.paper_report import save_daily_paper_report
 
@@ -157,6 +158,8 @@ def run_daily_paper_from_outputs(
     allow_non_trading_day: bool = False,
     allow_rerun: bool = False,
     execution_mode: str = "paper_trading",
+    generate_manual_confirmation: bool = True,
+    factor_decay_monitor_path: Path | None = None,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -225,6 +228,15 @@ def run_daily_paper_from_outputs(
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
         result.setdefault("paths", {})["paper_report"] = report_path
+    if persist_outputs and generate_manual_confirmation:
+        factor_monitor = load_factor_decay_monitor(settings, factor_decay_monitor_path)
+        result["factor_decay_monitor"] = factor_monitor
+        confirm_paths = save_manual_confirmation(
+            settings,
+            result,
+            factor_monitor=factor_monitor,
+        )
+        result.setdefault("paths", {})["manual_confirmation"] = confirm_paths
     return result
 
 
@@ -286,6 +298,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trade-status", type=Path, default=None, help="可选交易状态 CSV，含 symbol/ts_code 与 is_suspended/is_limit_up/is_limit_down")
     parser.add_argument("--no-persist", action="store_true", help="只运行不写订单、成交和账户状态文件")
     parser.add_argument("--no-report", action="store_true", help="不生成 Markdown 纸面交易日报")
+    parser.add_argument("--no-manual-confirm", action="store_true", help="不生成小资金人工确认实盘单")
+    parser.add_argument(
+        "--factor-decay-monitor",
+        type=Path,
+        default=None,
+        help="因子失效监控 CSV；默认 output/factor_validation/factor_decay_monitor.csv",
+    )
     parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
     parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
     parser.add_argument("--no-run-control", action="store_true", help="跳过交易日日历和重复运行保护")
@@ -318,6 +337,8 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             allow_non_trading_day=args.allow_non_trading_day,
             allow_rerun=args.allow_rerun,
             execution_mode=args.execution_mode,
+            generate_manual_confirmation=not args.no_manual_confirm,
+            factor_decay_monitor_path=args.factor_decay_monitor,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
         print(str(exc), file=sys.stderr)

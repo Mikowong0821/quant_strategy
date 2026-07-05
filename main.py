@@ -5,10 +5,11 @@
 3）IC 与可选落盘；
 4）各因子独立回测（`config.portfolio_weighting`：equal / max_sharpe / risk_parity）并打印每期 Top-K 及权重、绩效；
 5）多因子融合：IC 滞后滚动列权、训练段静态综合权重、调仓日前滚动综合权重三条路线并行验证。
-6）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
-7）由调仓日志估算换手率与交易成本。
-8）由调仓日志计算 HHI / effective_n 等持仓集中度指标。
-9）可选保存运行配置、绩效汇总、调仓日志、决策审计日志与图表，形成可复现实验记录。
+6）样本外验证与因子失效监控：训练段 vs 验证段对比 IC、多头超额和分组单调性。
+7）构造股票池等权基准，计算超额收益、跟踪误差与信息比率。
+8）由调仓日志估算换手率与交易成本。
+9）由调仓日志计算 HHI / effective_n 等持仓集中度指标。
+10）可选保存运行配置、绩效汇总、调仓日志、决策审计日志与图表，形成可复现实验记录。
 非 MVP：`live` 信号/模拟盘、`fuse_models` 高阶 method；详见 README「MVP 定稿」。
 """
 from __future__ import annotations
@@ -30,6 +31,11 @@ from analysis.data_quality import (
     rebalance_coverage,
 )
 from analysis.factor_diagnostics import batch_factor_group_returns, batch_factor_long_excess
+from analysis.factor_validation import (
+    build_factor_decay_monitor,
+    build_out_of_sample_validation,
+    save_factor_validation_outputs,
+)
 from analysis.ic import (
     daily_ic_spearman,
     ic_distribution_summary,
@@ -778,6 +784,8 @@ def main() -> None:
     factor_weight_summary = pd.DataFrame()
     factor_weight_train_summary = pd.DataFrame()
     rolling_factor_weight_log = pd.DataFrame()
+    out_of_sample_validation = pd.DataFrame()
+    factor_decay_monitor = pd.DataFrame()
     score_weighted_weights_by_factor: dict[str, float] = {}
     score_weighted_meta: dict[str, object] = {}
     fused_rolling_score_weighted = pd.Series(dtype=float)
@@ -939,6 +947,40 @@ def main() -> None:
     except Exception as e:
         print("【滚动综合权重】跳过: %s\n" % e)
 
+    print("========== 样本外验证与因子失效监控 ==========\n")
+    try:
+        out_of_sample_validation = build_out_of_sample_validation(
+            panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all"),
+            prices,
+            settings,
+            factors=DEFAULT_FACTOR_ORDER,
+            train_ratio=settings.factor_weight_train_ratio,
+        )
+        factor_decay_monitor = build_factor_decay_monitor(out_of_sample_validation)
+        if out_of_sample_validation.empty:
+            print("【样本外】跳过: 无有效验证结果\n")
+        else:
+            train_start = out_of_sample_validation["train_start"].iloc[0]
+            train_end = out_of_sample_validation["train_end"].iloc[0]
+            val_start = out_of_sample_validation["validation_start"].iloc[0]
+            val_end = out_of_sample_validation["validation_end"].iloc[0]
+            print("【样本外】train=%s ~ %s；validation=%s ~ %s" % (train_start, train_end, val_start, val_end))
+            for rec in factor_decay_monitor.to_dict("records"):
+                print(
+                    "【失效监控】%s  status=%s  valIC=%.4f  valExcess=%.4f  valTopBottom=%.4f  reasons=%s"
+                    % (
+                        rec["factor"],
+                        rec["status"],
+                        rec["validation_ic_mean"],
+                        rec["validation_excess_ann_return"],
+                        rec["validation_top_minus_bottom_ann"],
+                        rec["reasons"] or "-",
+                    )
+                )
+            print()
+    except Exception as e:
+        print("【样本外】跳过: %s\n" % e)
+
     if settings.persist_run_outputs and (
         not long_excess_summary.empty
         or not group_return_detail.empty
@@ -946,6 +988,8 @@ def main() -> None:
         or not factor_weight_summary.empty
         or not factor_weight_train_summary.empty
         or not rolling_factor_weight_log.empty
+        or not out_of_sample_validation.empty
+        or not factor_decay_monitor.empty
     ):
         try:
             diag_paths = save_factor_diagnostics(
@@ -961,6 +1005,16 @@ def main() -> None:
                 "因子诊断已保存: %s"
                 % ", ".join("%s=%s" % (k, v.resolve()) for k, v in diag_paths.items())
             )
+            if not out_of_sample_validation.empty or not factor_decay_monitor.empty:
+                validation_paths = save_factor_validation_outputs(
+                    settings,
+                    out_of_sample_validation,
+                    factor_decay_monitor,
+                )
+                print(
+                    "样本外验证已保存: %s"
+                    % ", ".join("%s=%s" % (k, v.resolve()) for k, v in validation_paths.items())
+                )
             print()
         except Exception as e:
             print("因子诊断落盘失败（不影响回测）:", e)

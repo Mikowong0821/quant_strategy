@@ -5,6 +5,13 @@ from __future__ import annotations
 
 from typing import Callable, Dict
 
+from factors.factor_finance import (
+    calc_gross_margin,
+    calc_low_debt_to_assets,
+    calc_net_margin,
+    calc_profit_growth,
+    calc_revenue_growth,
+)
 from factors.factor_momentum import calc_momentum
 from factors.factor_pe import calc_pe
 from factors.factor_reversal import calc_reversal
@@ -28,6 +35,11 @@ __all__ = [
     "DEFAULT_FACTOR_ORDER",
     "build_four_factor_panel",
     "calc_momentum",
+    "calc_gross_margin",
+    "calc_low_debt_to_assets",
+    "calc_net_margin",
+    "calc_profit_growth",
+    "calc_revenue_growth",
     "calc_pe",
     "calc_reversal",
     "calc_roe",

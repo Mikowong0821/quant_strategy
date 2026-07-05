@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from config import get_settings
+from factors.factor_finance import calc_gross_margin, calc_low_debt_to_assets, calc_profit_growth, calc_revenue_growth
 from factors.factor_momentum import calc_momentum
 from factors.factor_reversal import calc_reversal
 from factors.factor_volume import calc_volume_ratio
@@ -70,6 +71,105 @@ class TestPriceVolumeFactors(unittest.TestCase):
         self.assertGreater(int(panel["MOMENTUM_60D"].notna().sum()), 0)
         self.assertGreater(int(panel["REVERSAL_5D"].notna().sum()), 0)
         self.assertGreater(int(panel["VOLUME_RATIO_20D"].notna().sum()), 0)
+
+    def test_finance_factors_align_by_announcement_date(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=6)
+        prices_long = pd.DataFrame(
+            {
+                "trade_date": list(days) * 2,
+                "ts_code": ["AAA"] * len(days) + ["BBB"] * len(days),
+                "close": [10.0] * len(days) + [20.0] * len(days),
+            }
+        )
+        finance = pd.DataFrame(
+            [
+                {
+                    "ts_code": "AAA",
+                    "ann_date": "2024-01-03",
+                    "grossprofit_margin": 40.0,
+                    "debt_to_assets": 30.0,
+                    "or_yoy": 10.0,
+                    "netprofit_yoy": 20.0,
+                },
+                {
+                    "ts_code": "BBB",
+                    "ann_date": "2024-01-04",
+                    "grossprofit_margin": 25.0,
+                    "debt_to_assets": 60.0,
+                    "or_yoy": -5.0,
+                    "netprofit_yoy": -10.0,
+                },
+            ]
+        )
+
+        gross = calc_gross_margin(finance, prices_long)
+        low_debt = calc_low_debt_to_assets(finance, prices_long)
+        revenue_growth = calc_revenue_growth(finance, prices_long)
+        profit_growth = calc_profit_growth(finance, prices_long)
+
+        self.assertTrue(pd.isna(gross.loc[(days[1], "AAA")]))
+        self.assertAlmostEqual(float(gross.loc[(days[2], "AAA")]), 40.0)
+        self.assertAlmostEqual(float(low_debt.loc[(days[2], "AAA")]), -30.0)
+        self.assertAlmostEqual(float(revenue_growth.loc[(days[2], "AAA")]), 10.0)
+        self.assertAlmostEqual(float(profit_growth.loc[(days[2], "AAA")]), 20.0)
+
+    def test_build_panel_contains_finance_extension_factors(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=80)
+        syms = ["AAA", "BBB"]
+        rows = []
+        for sym in syms:
+            for i, dt in enumerate(days):
+                rows.append(
+                    {
+                        "trade_date": dt,
+                        "ts_code": sym,
+                        "open": 10.0 + i,
+                        "high": 10.5 + i,
+                        "low": 9.5 + i,
+                        "close": 10.0 + i,
+                        "volume": 100.0 + i,
+                    }
+                )
+        long_df = pd.DataFrame(rows)
+        finance = pd.DataFrame(
+            [
+                {
+                    "ts_code": "AAA",
+                    "ann_date": "2024-01-02",
+                    "eps": 1.0,
+                    "roe": 12.0,
+                    "grossprofit_margin": 40.0,
+                    "netprofit_margin": 15.0,
+                    "debt_to_assets": 30.0,
+                    "or_yoy": 20.0,
+                    "netprofit_yoy": 25.0,
+                },
+                {
+                    "ts_code": "BBB",
+                    "ann_date": "2024-01-02",
+                    "eps": 2.0,
+                    "roe": 8.0,
+                    "grossprofit_margin": 30.0,
+                    "netprofit_margin": 10.0,
+                    "debt_to_assets": 50.0,
+                    "or_yoy": 5.0,
+                    "netprofit_yoy": 7.0,
+                },
+            ]
+        )
+
+        with patch("factors.panel_builder.fetch_fina_indicator_panel", return_value=finance):
+            panel = build_four_factor_panel(long_df, long_df, get_settings())
+
+        for col in (
+            "GROSS_MARGIN",
+            "NET_MARGIN",
+            "LOW_DEBT_TO_ASSETS",
+            "REVENUE_GROWTH",
+            "PROFIT_GROWTH",
+        ):
+            self.assertIn(col, panel.columns)
+            self.assertGreater(int(panel[col].notna().sum()), 0)
 
 
 if __name__ == "__main__":

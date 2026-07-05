@@ -77,7 +77,9 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertAlmostEqual(result["cash"], 5_000.0)
             self.assertTrue((settings.output_dir / "paper_account" / "TEST" / "snapshots.csv").is_file())
             self.assertTrue((settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md").is_file())
+            self.assertTrue((settings.output_dir / "live_orders" / "TEST" / "2024-01-31_manual_confirm.csv").is_file())
             self.assertIn("paper_report", result["paths"])
+            self.assertIn("manual_confirmation", result["paths"])
 
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
