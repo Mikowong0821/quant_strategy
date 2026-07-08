@@ -124,10 +124,11 @@ flowchart LR
 | `factor_pe.py` | **市盈率类因子**：需要行情与财报字段对齐，输出长表。 |
 | `factor_roe.py` | **ROE 类因子**：依赖财务表与报告期/公告日规则，输出长表。 |
 | `factor_finance.py` | **质量与成长类财务因子**：毛利率、净利率、低资产负债率、营收增长、利润增长；按公告日向后对齐，避免未来函数。 |
+| `factor_ml.py` | **机器学习打分因子**：用已有因子面板滚动训练梯度提升类模型，预测未来收益并输出 `ML_SCORE`；只作为候选因子进入 IC、分组收益、样本外验证和回测。 |
 | `preprocess.py` | **因子清洗与标准化**：按交易日横截面做 winsorize、z-score，供融合与缓存复用。 |
 
 **本层不负责**仓位、手续费、优化；只负责「在合法信息集下算出每个 `(date, symbol)` 上的因子值」。  
-新增因子时：新建模块实现 `calc_xxx`。若要支持 `run_single_backtest("NAME")` 自动重算，需要在 `FACTOR_REGISTRY` 注册；若像质量 / 成长财务因子一样依赖财务表与行情长表共同对齐，也可以先通过 `panel_builder` 统一生成，再由 `main` 以预计算 `factor_values` 传入回测。
+新增因子时：新建模块实现 `calc_xxx`。若要支持 `run_single_backtest("NAME")` 自动重算，需要在 `FACTOR_REGISTRY` 注册；若像质量 / 成长财务因子一样依赖财务表与行情长表共同对齐，也可以先通过 `panel_builder` 统一生成，再由 `main` 以预计算 `factor_values` 传入回测。`ML_SCORE` 属于二阶因子：它依赖基础因子面板训练得到，因此在 `main` 中基础面板生成后追加。
 
 ---
 

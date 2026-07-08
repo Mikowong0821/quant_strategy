@@ -39,6 +39,15 @@ class Settings:
     vol_window: int = 20
     fina_history_years: int = 2
     persist_run_outputs: bool = True
+    # 机器学习打分因子：用已有因子面板预测未来收益，输出 ML_SCORE；只作为候选因子进入 IC/回测。
+    enable_ml_score: bool = True
+    ml_score_model: str = "hist_gradient_boosting"
+    ml_score_forward_days: int = 20
+    ml_score_train_lookback_days: int = 252
+    ml_score_min_train_days: int = 60
+    ml_score_min_train_rows: int = 100
+    ml_score_refit_every_days: int = 20
+    ml_score_random_state: int = 42
     # IC：因子 @ 日 t 与前瞻收盘收益 close(t+h)/close(t)-1 的截面 Spearman；h=1 为最常见日频口径
     ic_forward_days: int = 1
     # IC 稳定性诊断：对日 IC 做滚动均值/波动/正值占比统计的窗口。

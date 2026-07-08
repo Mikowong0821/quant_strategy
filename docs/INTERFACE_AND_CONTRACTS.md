@@ -95,6 +95,7 @@
 | `live.cache_io` | `save_run_cache(settings, long_df, prices_wide, panel, panel_zscore=None)` | `Settings`、行情、原始因子面板与可选标准化面板 | 写 `output/cache/` 下 `prices_long.csv`、`factor_panel.csv`、`factor_panel_zscore.csv` 等 |
 | `live.cache_io` | `save_run_config`、`save_performance_summary`、`save_rebalance_logs`、`save_decision_logs`、`save_turnover_logs`、`save_order_plans`、`save_order_checks`、`save_paper_trades`、`save_risk_exposure_logs`、`save_risk_exposure_summary`、`save_data_quality_reports`、`save_factor_diagnostics` | `Settings`、绩效 dict、回测 meta、换手表、订单计划、订单预检查结果、纸面交易日志、集中度表、数据质量表、因子诊断表 | 写 `run_config.json`、`performance_summary.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`order_plans/*.csv`、`order_checks/*.csv`、`paper_trades/*.csv`、`risk_exposure/*.csv`、`data_quality/*.csv`、`factor_diagnostics/*.csv` |
 | `factors.factor_*` | `calc_*(..., **kwargs)` | 行情/财务 DataFrame 或 PanelLong；财务扩展因子按 `ann_date` backward 对齐到交易日 | `PanelLong`（Series 或单列表 DataFrame） |
+| `factors.factor_ml` | `forward_return_label(prices, forward_days=...)`、`build_ml_score_factor(panel, prices, settings, feature_cols=...)` | 基础因子面板、价格宽表、`Settings.ml_score_*` 配置；训练样本只允许使用预测日前已经能观察到完整 forward return 的历史样本 | `ML_SCORE` Series 与训练日志 DataFrame；`main` 会把 `ML_SCORE` 追加进因子面板，训练日志可写 `output/factor_diagnostics/ml_score_training_log.csv` |
 | `factors.preprocess` | `winsorize_series`、`cross_sectional_zscore`、`preprocess_factor_panel` | 原始因子面板 | 清洗后的横截面 z-score 面板 |
 | `backtest.backtest_utils` | `to_returns(prices, price_col="close", ...)` | 宽表或长表（需约定） | 宽表 `pct_change` 或与输入同型的收益 |
 | `backtest.backtest_utils` | `align_panel(factor, prices, ...)` | 因子与价格时间轴 | 对齐后的联合索引，缺失为 NaN |
@@ -205,6 +206,8 @@
 | `ic_forward_days` | IC 前瞻收益 horizon（交易日） |
 | `ic_rolling_windows` | IC 稳定性诊断窗口；默认 `(20, 60)`，用于滚动均值、滚动波动、滚动正值比例 |
 | `factor_group_count` | 因子分组收益诊断的分组数；默认 `5`，`G1` 为低分组，`G5` 为高分组 |
+| `enable_ml_score` / `ml_score_model` | 是否生成机器学习打分因子；模型后端可选 `lightgbm` / `catboost` / `xgboost` / `hist_gradient_boosting` / `auto`，缺少可选依赖时回退到 sklearn 实现 |
+| `ml_score_forward_days` / `ml_score_train_lookback_days` / `ml_score_min_train_days` / `ml_score_min_train_rows` / `ml_score_refit_every_days` | `ML_SCORE` 的标签前瞻天数、滚动训练窗口、最少训练日期、最少训练样本数和模型重训频率 |
 
 ### 6.2 股票池管理与实盘目标池确认
 

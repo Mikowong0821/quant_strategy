@@ -12,6 +12,7 @@ from factors.factor_finance import (
     calc_profit_growth,
     calc_revenue_growth,
 )
+from factors.factor_ml import ML_SCORE_NAME, build_ml_score_factor, forward_return_label
 from factors.factor_momentum import calc_momentum
 from factors.factor_pe import calc_pe
 from factors.factor_reversal import calc_reversal
@@ -34,6 +35,8 @@ __all__ = [
     "FACTOR_REGISTRY",
     "DEFAULT_FACTOR_ORDER",
     "build_four_factor_panel",
+    "ML_SCORE_NAME",
+    "build_ml_score_factor",
     "calc_momentum",
     "calc_gross_margin",
     "calc_low_debt_to_assets",
@@ -45,4 +48,5 @@ __all__ = [
     "calc_roe",
     "calc_volume_ratio",
     "calc_volatility",
+    "forward_return_label",
 ]

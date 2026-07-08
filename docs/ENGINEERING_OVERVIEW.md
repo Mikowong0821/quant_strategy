@@ -15,11 +15,11 @@
 
 - 行情：`data/prices_demo.csv`、Tushare 日线本地缓存、Excel/CSV 股票池驱动的 Tushare 多标的日线，或合成宽表兜底。
 - 财务：`fina_indicator` 拉取并与交易日对齐（PE、ROE、毛利率、净利率、资产负债率、营收增长、利润增长等）。
-- 因子：`factors/panel_builder.build_four_factor_panel` 一次性产出多列（短/长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长）；`main` 中单因子回测 **传入预计算 `factor_values`**（不重复算子）。`run_single_backtest` 仍支持仅传 `factor_name` 走注册表自动算子。
+- 因子：`factors/panel_builder.build_four_factor_panel` 一次性产出基础多列（短/长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长）；若 `enable_ml_score=True`，`factors.factor_ml.build_ml_score_factor` 会用这些基础因子滚动训练梯度提升类模型，追加 `ML_SCORE` 作为机器学习打分因子；`main` 中单因子回测 **传入预计算 `factor_values`**（不重复算子）。`run_single_backtest` 仍支持仅传 `factor_name` 走注册表自动算子。
 - 因子预处理：`factors.preprocess` 按交易日横截面对每列因子做 winsorize 与 z-score，生成 `factor_panel_zscore.csv`；多因子融合复用同一套标准化口径。
 - 回测：**月末再平衡（`ME`）**、**Top-K 多头**、**收盘价成交**、**单边手续费**；若配置 `min_avg_volume` / `min_avg_amount`，Top-K 前会按过去窗口平均成交量 / 成交额做可交易性过滤。持仓在 Top-K 内为 **`portfolio_weighting`**：`equal`（1/K）、**`max_sharpe`**（历史日收益估 μ、Σ 后 `maximize_sharpe`，失败等权）或 **`risk_parity`**（同窗口估 Σ 后 `risk_parity`，样本不足等失败等权）。目标权重生成后会经过 `max_position_weight` 单票上限、`max_industry_weight` 行业权重上限、`target_volatility` 波动率目标、`min_positions` 最小持仓数量、`max_rebalance_turnover` 单次换手上限，以及可选的 `enable_trade_status_filter` 停牌 / 涨跌停交易约束。每期 `meta["rebalance_log"]` 记录选股、可交易性过滤前后候选数、行业暴露、目标波动缩放、最小持仓检查、现金目标仓位、约束后权重与节流信息；`meta["decision_log"]` 逐股票记录入选、过滤、所属行业、波动率缩放、最小持仓缩放、买卖、交易阻断和节流原因。
 - **IC 与稳定性诊断**：`analysis.ic` 日截面 Spearman vs 前瞻收益；不参与调仓；可落盘 `output/cache/ic_*.csv`。同时输出 IC 分布分位数、正负占比、极端值和滚动稳定性到 `output/ic_diagnostics/`。
-- **因子诊断**：`analysis.factor_diagnostics` 对每个因子构造 Top-K 等权多头腿，计算相对股票池等权基准的 `excess_ann_return`、`tracking_error`、`information_ratio`；同时按 `Settings.factor_group_count` 做分组收益，输出 Top-Bottom 与 `monotonicity_score`，用于回答“高分组有没有主动收益”和“全排序是否有收益层次”。
+- **因子诊断**：`analysis.factor_diagnostics` 对每个因子构造 Top-K 等权多头腿，计算相对股票池等权基准的 `excess_ann_return`、`tracking_error`、`information_ratio`；同时按 `Settings.factor_group_count` 做分组收益，输出 Top-Bottom 与 `monotonicity_score`，用于回答“高分组有没有主动收益”和“全排序是否有收益层次”。`ML_SCORE` 与其他因子使用同一套诊断口径，不能因为来自机器学习模型就跳过验证。
 - **多因子权重建议**：`models.factor_weighting` 综合 IC 分布、rolling IC、Top-Bottom 与单调性，输出 `factor_score` 和 `fusion_weight`；全样本表用于诊断审计，训练段表会作为 `FUSED_SCORE_WEIGHTED` 的静态权重来源，调仓日前历史窗口会生成 `rolling_factor_weight_log.csv`。
 - **样本外验证与因子失效监控**：`analysis.factor_validation` 复用 IC、多头超额和分组收益口径，把历史日期按 `factor_weight_train_ratio` 切成训练段 / 验证段，比较 `ic_mean`、正 IC 占比、多头超额、Top-Bottom 和单调性，并输出 `OK/WATCH/DEGRADED/FAILED` 状态。
 - **多因子融合**：默认 **`fuse_ic_weighted_zscore`**（各因子日 IC 经 `shift(1)+rolling` 得非负列权，再对横截面 z-score 加权；失败或配置关闭时用 **`fuse_equal_weight_zscore`**）→ `FUSED_ZSCORE`。另有 **`fuse_static_weight_zscore`**，将训练段 `fusion_weight` 固定后应用到验证段 → `FUSED_SCORE_WEIGHTED`。第三条为调仓日前滚动综合权重 → `FUSED_ROLLING_SCORE_WEIGHTED`，每期只用历史窗口、带权重上下限和平滑。三者都通过 `run_multi_backtest(fused=...)` 进入同一套 Top-K 回测；另支持 `run_multi_backtest(factors, weights)` 原始因子线性加权入口（`main` 当前未用）。
@@ -43,7 +43,7 @@
 
 **数据落盘（缓存）**：
 
-- `live/cache_io.save_run_cache`：在因子面板构建成功后，将 **`prices_long.csv`**、**`prices_wide_close.csv`**、**`factor_panel.csv`**、**`factor_panel_zscore.csv`**、**`run_meta.txt`** 写入 **`output/cache/`**。
+- `live/cache_io.save_run_cache`：在因子面板构建成功后，将 **`prices_long.csv`**、**`prices_wide_close.csv`**、**`factor_panel.csv`**、**`factor_panel_zscore.csv`**、**`run_meta.txt`** 写入 **`output/cache/`**；若生成 `ML_SCORE`，`main` 另写 **`output/factor_diagnostics/ml_score_training_log.csv`**。
 - `live/cache_io.save_data_quality_reports`：写 **`output/data_quality/*.csv`**，保存价格 / 因子 / 调仓日覆盖率报告。
 - `analysis.ic.save_ic_series`：在 IC 计算完成且 `persist_run_outputs` 时写 **`ic_<因子名>.csv`**。
 - `analysis.ic.save_ic_diagnostics`：写 **`output/ic_diagnostics/ic_distribution_summary.csv`** 与 **`ic_rolling_stability.csv`**，保存 IC 分布和滚动稳定性。
@@ -98,7 +98,7 @@
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日可交易性过滤、Top-K、**等权 / 夏普 / 风险平价**、单票权重上限、行业权重上限、波动率目标与现金仓位、最小持仓数量、单次换手上限、停牌 / 涨跌停交易约束、撮合与净值；`meta` 含 `rebalance_log`、`decision_log`、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`min_positions`、`max_rebalance_turnover`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |
 | `analysis/ic.py` | `daily_ic_spearman`、`summarize_ic`、`ic_distribution_summary`、`ic_rolling_stability`、`save_ic_series`、`save_ic_diagnostics`。 |
-| `factors/` | 各 `calc_*` + `FACTOR_REGISTRY` + `panel_builder`。 |
+| `factors/` | 各 `calc_*` + `FACTOR_REGISTRY` + `panel_builder`；`factor_ml.py` 生成二阶机器学习打分因子 `ML_SCORE`。 |
 | `analysis/data_quality.py` | `price_coverage`、`factor_coverage`、`factor_daily_coverage`、`rebalance_coverage`。 |
 | `analysis/performance.py` | `summarize(nav)`。 |
 | `analysis/benchmark.py` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame`。 |
@@ -109,6 +109,7 @@
 | `analysis/plotting.py` | `plot_nav`、`plot_ic`、`plot_weights`、`plot_turnover`、`plot_effective_n`、`plot_factor_coverage`、`rebalance_log_to_weights_frame`。 |
 | `models/fusion.py` | `fuse_equal_weight_zscore`、`fuse_ic_weighted_zscore`、`fuse_static_weight_zscore`、`fuse_models`（仅部分 `method`）。 |
 | `models/factor_weighting.py` | `build_factor_weight_summary`：将因子评价指标合成 `factor_score` / `fusion_weight`；全样本用于诊断，训练段用于静态融合验证。 |
+| `factors/factor_ml.py` | `build_ml_score_factor`、`forward_return_label`：用基础因子特征滚动训练机器学习模型，输出 `ML_SCORE` 和训练日志。 |
 | `factors/preprocess.py` | `winsorize_series`、`cross_sectional_zscore`、`preprocess_factor_panel`；统一因子清洗和标准化口径。 |
 | `models/optimizer.py` | `maximize_sharpe`、`risk_parity`；由 `backtest_single` 在对应 `portfolio_weighting` 时再平衡日调用。 |
 
@@ -151,22 +152,23 @@
 | 2b | 否则若存在 Tushare 行情缓存 | `load_prices_from_csv(settings.tushare_price_cache_path)` → `long_to_wide` |
 | 2c | 否则读取股票池并拉取 Tushare | `load_stock_pool(settings.stock_pool_path)` → `fetch_daily_panel(...)` → 写行情缓存 → `long_to_wide` |
 | 2d | 股票池不存在则使用默认示例股票；失败则合成宽表 | `_DEFAULT_TS_SYMBOLS` / `_demo_price_wide()`，`wide_to_long` → `long_df` |
-| 3 | 构建多因子面板 | `build_four_factor_panel(prices, long_df, settings)` → `panel` |
-| 4 | 数据质量报告 | `price_coverage`、`factor_coverage`、`rebalance_coverage` |
-| 5 | 因子预处理与可选落盘 | `preprocess_factor_panel`、`save_run_cache`（`persist_run_outputs`） |
-| 6 | IC：各因子列 + **与融合同构的** FUSED 得分 | `daily_ic_spearman`、`summarize_ic`；可选 `save_ic_series` |
-| 7 | IC 分布与稳定性诊断 | `ic_distribution_summary`、`ic_rolling_stability` → `ic_distribution_summary.csv`、`ic_rolling_stability.csv` |
-| 8 | 因子诊断 | `batch_factor_long_excess`、`batch_factor_group_returns` → `long_excess_summary.csv`、`group_return_detail.csv`、`group_return_summary.csv` |
-| 9 | 多因子权重建议 | `build_factor_weight_summary` → `factor_weight_summary.csv` / `factor_weight_train_summary.csv` / `rolling_factor_weight_log.csv` |
-| 10 | 样本外验证与因子失效监控 | `build_out_of_sample_validation`、`build_factor_decay_monitor` → `output/factor_validation/*.csv` |
-| 11 | 单因子回测 ×N | `run_single_backtest(fname, factor_values=panel[fname], ...)` |
-| 12 | 融合回测 ×3 | **`_build_fused_zscore_panel`**（`fuse_ic_weighted_zscore` 或等权）→ `FUSED_ZSCORE`；**`fuse_static_weight_zscore`**（训练段权重、验证段回测）→ `FUSED_SCORE_WEIGHTED`；调仓日前滚动综合权重 → `FUSED_ROLLING_SCORE_WEIGHTED` |
-| 13 | 绩效与打印 | `summarize`；`_print_backtest_block` 打印 `rebalance_log`、绩效 |
-| 14 | 基准与超额收益 | `equal_weight_benchmark_nav`、`summarize_excess` |
-| 15 | 换手与成本 | `turnover_frame`、`summarize_turnover` |
-| 16 | 风险暴露与集中度 | `concentration_frame`、`summarize_concentration` |
-| 17 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` |
-| 18 | 净值、超额净值、覆盖率、换手与集中度图 | `plot_nav` / `plot_factor_coverage` / `plot_turnover` / `plot_effective_n` |
+| 3 | 构建基础多因子面板 | `build_four_factor_panel(prices, long_df, settings)` → `panel` |
+| 4 | 追加机器学习打分因子 | `build_ml_score_factor(panel, prices, settings)` → `ML_SCORE`（可配置关闭） |
+| 5 | 数据质量报告 | `price_coverage`、`factor_coverage`、`rebalance_coverage` |
+| 6 | 因子预处理与可选落盘 | `preprocess_factor_panel`、`save_run_cache`（`persist_run_outputs`） |
+| 7 | IC：各因子列 + **与融合同构的** FUSED 得分 | `daily_ic_spearman`、`summarize_ic`；可选 `save_ic_series` |
+| 8 | IC 分布与稳定性诊断 | `ic_distribution_summary`、`ic_rolling_stability` → `ic_distribution_summary.csv`、`ic_rolling_stability.csv` |
+| 9 | 因子诊断 | `batch_factor_long_excess`、`batch_factor_group_returns` → `long_excess_summary.csv`、`group_return_detail.csv`、`group_return_summary.csv` |
+| 10 | 多因子权重建议 | `build_factor_weight_summary` → `factor_weight_summary.csv` / `factor_weight_train_summary.csv` / `rolling_factor_weight_log.csv` |
+| 11 | 样本外验证与因子失效监控 | `build_out_of_sample_validation`、`build_factor_decay_monitor` → `output/factor_validation/*.csv` |
+| 12 | 单因子回测 ×N | `run_single_backtest(fname, factor_values=panel[fname], ...)` |
+| 13 | 融合回测 ×3 | **`_build_fused_zscore_panel`**（`fuse_ic_weighted_zscore` 或等权）→ `FUSED_ZSCORE`；**`fuse_static_weight_zscore`**（训练段权重、验证段回测）→ `FUSED_SCORE_WEIGHTED`；调仓日前滚动综合权重 → `FUSED_ROLLING_SCORE_WEIGHTED` |
+| 14 | 绩效与打印 | `summarize`；`_print_backtest_block` 打印 `rebalance_log`、绩效 |
+| 15 | 基准与超额收益 | `equal_weight_benchmark_nav`、`summarize_excess` |
+| 16 | 换手与成本 | `turnover_frame`、`summarize_turnover` |
+| 17 | 风险暴露与集中度 | `concentration_frame`、`summarize_concentration` |
+| 18 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` |
+| 19 | 净值、超额净值、覆盖率、换手与集中度图 | `plot_nav` / `plot_factor_coverage` / `plot_turnover` / `plot_effective_n` |
 
 **多因子关系**：多条单因子回测为 **同一 `panel` 的不同列** 的独立策略；融合回测为 **IC 列权、训练段静态权重或调仓日前滚动权重** 得到的综合得分经 `run_multi_backtest` 的独立策略。调仓日 **不会**临时拼接字段再跑一条，融合得分会在进入回测前预先生成。
 
@@ -243,7 +245,7 @@
 ## 7. 默认股票池与因子列表（`main.py`）
 
 - **股票池**：优先 `Settings.stock_pool_path`（默认 `data/stock_pool.xlsx`，可用 `QUANT_STOCK_POOL_PATH` 指向本机文件）；缺失时才使用 `_DEFAULT_TS_SYMBOLS` 示例股票池。
-- **因子循环顺序**：`factors.panel_builder.DEFAULT_FACTOR_ORDER`：`MOMENTUM` → `MOMENTUM_60D` → `REVERSAL_5D` → `VOLATILITY` → `VOLUME_RATIO_20D` → `PE` → `ROE` → `GROSS_MARGIN` → `NET_MARGIN` → `LOW_DEBT_TO_ASSETS` → `REVENUE_GROWTH` → `PROFIT_GROWTH`（与 `main` 中 IC/回测循环一致）。
+- **因子循环顺序**：基础顺序来自 `factors.panel_builder.DEFAULT_FACTOR_ORDER`：`MOMENTUM` → `MOMENTUM_60D` → `REVERSAL_5D` → `VOLATILITY` → `VOLUME_RATIO_20D` → `PE` → `ROE` → `GROSS_MARGIN` → `NET_MARGIN` → `LOW_DEBT_TO_ASSETS` → `REVENUE_GROWTH` → `PROFIT_GROWTH`；若 `enable_ml_score=True` 且模型生成有效预测，`main` 会在末尾追加 `ML_SCORE`，后续 IC/诊断/回测均使用动态 `factor_order`。
 
 ---
 

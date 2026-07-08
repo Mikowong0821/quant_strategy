@@ -64,6 +64,7 @@ from backtest.backtest_multi import run_multi_backtest
 from backtest.backtest_single import run_single_backtest
 from backtest.backtest_utils import long_to_wide, wide_to_long
 from config import Settings, get_settings
+from factors.factor_ml import ML_SCORE_NAME, build_ml_score_factor
 from factors.panel_builder import DEFAULT_FACTOR_ORDER, build_four_factor_panel
 from factors.preprocess import cross_sectional_zscore, preprocess_factor_panel
 from live.cache_io import (
@@ -598,6 +599,42 @@ def main() -> None:
         "面板形状: %d 行 × %d 列 (列=%s)"
         % (panel.shape[0], panel.shape[1], list(panel.columns))
     )
+
+    ml_score_log = pd.DataFrame()
+    factor_order = [f for f in DEFAULT_FACTOR_ORDER if f in panel.columns]
+    if getattr(settings, "enable_ml_score", True):
+        try:
+            ml_score, ml_score_log = build_ml_score_factor(
+                panel[factor_order].dropna(axis=1, how="all"),
+                prices,
+                settings,
+                feature_cols=factor_order,
+            )
+            if ml_score.notna().sum() > 0:
+                panel[ML_SCORE_NAME] = ml_score.reindex(panel.index)
+                factor_order.append(ML_SCORE_NAME)
+                backend = (
+                    str(ml_score_log["model_backend"].iloc[-1])
+                    if not ml_score_log.empty and "model_backend" in ml_score_log.columns
+                    else str(getattr(settings, "ml_score_model", ""))
+                )
+                print(
+                    "机器学习打分因子已生成: %s  有效样本=%d  refit=%d  backend=%s"
+                    % (
+                        ML_SCORE_NAME,
+                        int(panel[ML_SCORE_NAME].notna().sum()),
+                        int(len(ml_score_log)),
+                        backend,
+                    )
+                )
+            else:
+                print("机器学习打分因子跳过: 有效预测为空")
+        except Exception as e:
+            print("机器学习打分因子生成失败（不影响基础因子流程）:", e)
+    else:
+        print("机器学习打分因子已关闭: enable_ml_score=False")
+
+    print("本次参与诊断/回测的因子顺序: %s" % factor_order)
     panel_zscore = preprocess_factor_panel(panel)
     print(
         "标准化面板: %d 行 × %d 列（横截面 winsorize + z-score）"
@@ -615,7 +652,7 @@ def main() -> None:
                 panel,
                 prices,
                 rebalance_dates,
-                factors=DEFAULT_FACTOR_ORDER,
+                factors=factor_order,
             ),
         }
         fc = data_quality_reports["factor_coverage"]
@@ -641,6 +678,12 @@ def main() -> None:
                 "数据已落盘: %s"
                 % ", ".join("%s=%s" % (k, v) for k, v in paths.items())
             )
+            if not ml_score_log.empty:
+                ml_log_dir = settings.output_dir / "factor_diagnostics"
+                ml_log_dir.mkdir(parents=True, exist_ok=True)
+                ml_log_path = ml_log_dir / "ml_score_training_log.csv"
+                ml_score_log.to_csv(ml_log_path, index=False)
+                print("机器学习打分因子训练日志已保存:", ml_log_path.resolve())
         except Exception as e:
             print("落盘失败（不影响回测）:", e)
         if data_quality_reports:
@@ -669,7 +712,7 @@ def main() -> None:
         "\n========== IC（截面 Spearman：因子@t vs 前瞻 %d 日收盘收益）==========\n"
         % settings.ic_forward_days
     )
-    for fname in DEFAULT_FACTOR_ORDER:
+    for fname in factor_order:
         if fname not in panel.columns:
             print("【IC】%s 跳过: 面板中无该列\n" % fname)
             continue
@@ -700,7 +743,7 @@ def main() -> None:
         except Exception as e:
             print("【IC】%s 跳过: %s\n" % (fname, e))
     try:
-        sub_ic = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        sub_ic = panel[factor_order].dropna(axis=1, how="all")
         if sub_ic.shape[1] > 0:
             fused_ic, fusion_mode = _build_fused_zscore_panel(sub_ic, ic_by_name, settings)
             ic_f = daily_ic_spearman(
@@ -795,7 +838,7 @@ def main() -> None:
         long_excess_summary, _ = batch_factor_long_excess(
             panel,
             prices,
-            factors=DEFAULT_FACTOR_ORDER,
+            factors=factor_order,
             top_k=settings.top_k,
             rebalance_freq=settings.rebalance_freq,
             price_col=settings.price_col,
@@ -825,7 +868,7 @@ def main() -> None:
         group_return_detail, group_return_summary = batch_factor_group_returns(
             panel,
             prices,
-            factors=DEFAULT_FACTOR_ORDER,
+            factors=factor_order,
             group_count=settings.factor_group_count,
             rebalance_freq=settings.rebalance_freq,
             price_col=settings.price_col,
@@ -863,7 +906,7 @@ def main() -> None:
                 ic_distribution,
                 ic_rolling,
                 group_return_summary,
-                factors=DEFAULT_FACTOR_ORDER,
+                factors=factor_order,
                 preferred_rolling_window=preferred_window,
             )
             if factor_weight_summary.empty:
@@ -885,7 +928,7 @@ def main() -> None:
             print("【因子权重】跳过: %s\n" % e)
 
     try:
-        sub_weight = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        sub_weight = panel[factor_order].dropna(axis=1, how="all")
         if sub_weight.shape[1] > 0:
             (
                 factor_weight_train_summary,
@@ -916,7 +959,7 @@ def main() -> None:
         print("【训练段综合权重】跳过: %s\n" % e)
 
     try:
-        sub_rolling = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        sub_rolling = panel[factor_order].dropna(axis=1, how="all")
         if sub_rolling.shape[1] > 0:
             (
                 fused_rolling_score_weighted,
@@ -950,10 +993,10 @@ def main() -> None:
     print("========== 样本外验证与因子失效监控 ==========\n")
     try:
         out_of_sample_validation = build_out_of_sample_validation(
-            panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all"),
+            panel[factor_order].dropna(axis=1, how="all"),
             prices,
             settings,
-            factors=DEFAULT_FACTOR_ORDER,
+            factors=factor_order,
             train_ratio=settings.factor_weight_train_ratio,
         )
         factor_decay_monitor = build_factor_decay_monitor(out_of_sample_validation)
@@ -1023,7 +1066,7 @@ def main() -> None:
     nav_curves: dict[str, pd.Series] = {}
 
     print("\n========== 一、单因子回测（各列独立，横截面 Top-K + 配置持仓权重）==========\n")
-    for fname in DEFAULT_FACTOR_ORDER:
+    for fname in factor_order:
         if fname not in panel.columns:
             print("【因子】%s 跳过: 面板中无该列\n" % fname)
             continue
@@ -1049,7 +1092,7 @@ def main() -> None:
 
     print("========== 二、多因子融合（IC rolling + 静态综合权重 + 滚动综合权重）==========\n")
     try:
-        sub = panel[DEFAULT_FACTOR_ORDER].dropna(axis=1, how="all")
+        sub = panel[factor_order].dropna(axis=1, how="all")
         if sub.shape[1] == 0:
             print("【融合】跳过: 无有效因子列\n")
             return
