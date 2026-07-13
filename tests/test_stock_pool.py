@@ -81,6 +81,25 @@ class StockPoolTests(unittest.TestCase):
             self.assertTrue(bool(frame.loc[0, "enabled"]))
             self.assertFalse(bool(frame.loc[1, "enabled"]))
 
+    def test_load_stock_pool_frame_uses_category_as_sub_industry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pool.csv"
+            pd.DataFrame(
+                {
+                    "分类": ["银行", "白酒"],
+                    "股票代码": ["000001.SZ", "600519.SH"],
+                    "股票简称": ["平安银行", "贵州茅台"],
+                    "主题": ["A50代表池", "A50代表池"],
+                    "是否启用": [1, 1],
+                }
+            ).to_csv(path, index=False)
+
+            frame = load_stock_pool_frame(path)
+
+            self.assertEqual(frame.loc[0, "theme"], "A50代表池")
+            self.assertEqual(frame.loc[0, "sub_industry"], "银行")
+            self.assertEqual(frame.loc[1, "sub_industry"], "白酒")
+
     def test_build_stock_pool_filter_report_and_active_universe(self):
         pool = pd.DataFrame(
             {

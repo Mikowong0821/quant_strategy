@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
+本文描述从 `main.py` 入口到 **因子清洗与行业内标准化 → 数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
 
 ---
 
@@ -23,16 +23,19 @@ flowchart TB
     subgraph panel["因子层"]
         WIDE --> FB["factors/panel_builder<br/>build_four_factor_panel"]
         LONG --> FB
-        FB --> BASEPANEL["基础因子面板<br/>量价 / 估值 / 质量 / 成长"]
+        FB --> BASEPANEL["基础因子面板<br/>量价 / 估值 / 质量 / 成长 / 现金流"]
         BASEPANEL --> ML["factors/factor_ml<br/>滚动训练 ML_SCORE"]
         WIDE --> ML
-        ML --> PANEL["因子面板 panel<br/>基础因子 + ML_SCORE"]
+        ML --> PANEL["原始因子面板 panel<br/>基础因子 + ML_SCORE"]
+        LONG --> IND["行业字段<br/>股票池 子行业/分类 或 industry_col"]
+        PANEL --> PREPMAIN["factors/preprocess<br/>行业内 winsorize + z-score<br/>小行业回退全截面"]
+        IND --> PREPMAIN
+        PREPMAIN --> RPANEL["研究面板 research_panel<br/>IC/诊断/回测使用"]
     end
 
     subgraph cache["落盘（可选）"]
-        PANEL --> PREP["factors/preprocess<br/>winsorize + z-score"]
         PANEL --> CI["live/cache_io.save_run_cache<br/>行情/原始面板 CSV"]
-        PREP --> CI2["factor_panel_zscore.csv"]
+        RPANEL --> CI2["factor_panel_zscore.csv"]
     end
 
     subgraph dq["数据质量（可选落盘）"]
@@ -42,16 +45,16 @@ flowchart TB
     end
 
     subgraph ic_block["IC：单因子评价 + 融合列权输入"]
-        PANEL --> IC["analysis/ic.daily_ic_spearman<br/>截面 Spearman vs 前瞻收益"]
+        RPANEL --> IC["analysis/ic.daily_ic_spearman<br/>截面 Spearman vs 前瞻收益"]
         WIDE --> IC
         IC --> ICSUM["summarize_ic + IC 分布/滚动稳定性<br/>可选写 ic_*.csv / ic_diagnostics/*.csv"]
     end
 
     subgraph diag["因子诊断"]
-        PANEL --> LEX["analysis/factor_diagnostics<br/>Top-K 等权多头腿"]
+        RPANEL --> LEX["analysis/factor_diagnostics<br/>Top-K 等权多头腿"]
         WIDE --> LEX
         LEX --> LEXOUT["output/factor_diagnostics<br/>long_excess_summary.csv"]
-        PANEL --> GRP["analysis/factor_diagnostics<br/>分组收益 / 单调性"]
+        RPANEL --> GRP["analysis/factor_diagnostics<br/>分组收益 / 单调性"]
         WIDE --> GRP
         GRP --> GRPOUT["group_return_detail.csv<br/>group_return_summary.csv"]
         IC --> FW["models/factor_weighting<br/>全样本综合因子评分 / 权重建议"]
@@ -63,25 +66,25 @@ flowchart TB
         IC --> FWROLL["调仓日前滚动综合权重<br/>lookback / min_days / 平滑"]
         GRP --> FWROLL
         FWROLL --> FWROLLOUT["rolling_factor_weight_log.csv"]
-        PANEL --> OOS["analysis/factor_validation<br/>训练段 vs 样本外验证"]
+        RPANEL --> OOS["analysis/factor_validation<br/>训练段 vs 样本外验证"]
         WIDE --> OOS
         OOS --> OOSOUT["output/factor_validation<br/>out_of_sample_validation.csv<br/>factor_decay_monitor.csv"]
     end
 
     subgraph fusion["融合得分（FUSED_ZSCORE / SCORE_WEIGHTED / ROLLING_SCORE_WEIGHTED）"]
-        PANEL --> FZ["models/fusion<br/>fuse_ic_weighted 或等权 z-score"]
+        RPANEL --> FZ["models/fusion<br/>fuse_ic_weighted 或等权 z-score"]
         IC --> FZ
         FZ --> FUSED["融合 PanelLong"]
-        PANEL --> FS["models/fusion<br/>fuse_static_weight_zscore"]
+        RPANEL --> FS["models/fusion<br/>fuse_static_weight_zscore"]
         FWTRAIN --> FS
         FS --> FUSED_SW["训练段权重固定<br/>验证段 PanelLong"]
-        PANEL --> FR["main<br/>调仓日前滚动权重融合"]
+        RPANEL --> FR["main<br/>调仓日前滚动权重融合"]
         FWROLL --> FR
         FR --> FUSED_RW["滚动综合权重<br/>调仓日 PanelLong"]
     end
 
     subgraph bt["回测层（每个因子 / 融合各跑一条）"]
-        PANEL --> BT["backtest/backtest_single<br/>或 backtest_multi"]
+        RPANEL --> BT["backtest/backtest_single<br/>或 backtest_multi"]
         FUSED --> BT
         FUSED_SW --> BT
         FUSED_RW --> BT
@@ -178,7 +181,7 @@ flowchart TB
 |------|------|--------|------|
 | 1 | `config.get_settings()` | 读路径、区间、`top_k`、费率、`portfolio_weighting`、IC 前瞻天数等 | 集中参数，避免魔法数 |
 | 2 | `live/stock_pool` + `live/data_feed` + `backtest_utils` | 优先本地 demo / Tushare 缓存；否则从 Excel/CSV 股票池读取标的并拉取 Tushare 日线，得到 `long_df`、`prices` 宽表 | 摆脱默认示例股票池，统一真实股票池、行情缓存与回测数据形态 |
-| 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长等基础列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
+| 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量等基础列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
 | 4 | `factors/factor_ml` | 用基础因子作为特征、未来收益作为标签，按时间滚动训练梯度提升类模型并追加 `ML_SCORE` | 把机器学习作为候选因子，而不是直接替代策略；训练样本只使用预测日前可观察到完整标签的历史数据 |
 | 5 | `analysis/data_quality` | 统计价格覆盖、因子覆盖、调仓日有效截面 | 判断结果是否建立在足够样本上 |
 | 6 | `factors/preprocess` + `live/cache_io.save_run_cache`（可选） | 生成横截面标准化因子面板，并写 `output/cache/*.csv` | 复现与离线分析；多因子融合使用统一 z-score 口径 |
@@ -197,7 +200,7 @@ flowchart TB
 | 19 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
 | 20 | `live/order_builder` | 读取目标权重、当前持仓、最新价格、现金 / 总资产，按手数和最小订单金额生成订单计划 | 把研究层的“目标权重”转成准实盘层的“买卖多少股” |
 | 21 | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
-| 22 | `live/broker` | 定义 `BrokerAdapter`、`SimulatedBroker`、`RealBrokerReadOnlyAdapter`，统一查资金、查持仓、查订单、下单、撤单 | 给纸面、模拟和未来真实券商一个共同接口；真实券商先用只读 adapter 验证查询能力 |
+| 22 | `live/broker` + `live/broker_factory` | 定义 `BrokerAdapter`、`SimulatedBroker`、`RealBrokerReadOnlyAdapter`，并按 `broker_mode/broker_provider` 创建对应 Adapter | 给纸面、模拟和未来真实券商一个共同接口；真实券商先用只读 adapter 验证查询能力，具体通道统一注册到 Factory |
 | 23 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
 | 24 | `live/account_state` | 保存和读取纸面账户现金、持仓与每日快照 | 让纸面交易能跨天连续运行，而不是每次从初始资金重启 |
 | 25 | `live/stock_pool` + `scripts/build_live_universe.py` | 从人工研究池、价格缓存和交易状态生成过滤报告与 `active_universe_<date>.csv` | 在券商接口前确认“今天系统允许在哪些股票里选”，避免直接拿人工池下单 |
@@ -230,13 +233,13 @@ flowchart TB
 - **最小持仓数量（`min_positions`）**：默认 0 表示关闭；若有效目标持仓数少于阈值，则把股票总仓位缩到 `min_positions_exposure`，剩余保留现金，避免可交易标的不足时硬满仓。
 - **订单计划（`live.order_builder`）**：回测结束后，可把最近一期 `rebalance_log` 中的 `picks/weights` 视为目标权重，再结合当前持仓、现金 / 总资产和最新价格，生成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。该层只做订单计划，不做券商下单、不做成交回报。
 - **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
-- **统一券商接口（`live.broker`）**：定义 `BrokerAdapter` 协议和 `BrokerAccount` / `BrokerPosition` / `BrokerOrder` 数据结构，让上层只关心查资金、查持仓、查订单、下单和撤单。`SimulatedBroker` 用同一协议做立即成交模拟；`RealBrokerReadOnlyAdapter` 固定只读，可查询账户、持仓和订单快照，但会阻断下单和撤单；未来接 QMT、PTrade 或其他券商时，只需要实现同一协议。
+- **统一券商接口（`live.broker` + `live.broker_factory`）**：`live.broker` 定义 `BrokerAdapter` 协议和 `BrokerAccount` / `BrokerPosition` / `BrokerOrder` 数据结构，让上层只关心查资金、查持仓、查订单、下单和撤单。`SimulatedBroker` 用同一协议做立即成交模拟；`RealBrokerReadOnlyAdapter` 固定只读，可查询账户、持仓和订单快照，但会阻断下单和撤单；`live.broker_factory.create_broker_adapter` 根据 `broker_mode/broker_provider` 创建模拟或只读 Adapter，并为未来 QMT、PTrade、掘金 Adapter 提供统一注册入口。
 - **纸面 / 真实账户只读对账（`live.broker_reconcile`）**：读取纸面账户状态，再通过只读 `BrokerAdapter` 读取真实账户快照，比较现金、总资产、持仓股数和可用股数差异。该层只输出 CSV / Markdown 对账报告，不下单、不撤单。
 - **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
 - **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
 - **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、执行模式选择、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。默认 `execution_mode="paper_trading"` 沿用旧纸面成交；切到 `execution_mode="simulated_broker"` 时，订单会先进入 `SimulatedBroker`，再转换为兼容的 `paper_trades`，让日报和账户状态继续复用。
-- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
-- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
+- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--factor-decay-monitor`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
+- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、因子健康与失效监控、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
 - **小资金人工确认实盘单（`live.manual_confirmation`）**：默认随日终脚本生成 CSV 和 Markdown，路径为 `output/live_orders/<strategy>/<date>_manual_confirm.csv/.md`。确认单包含订单建议、预检查结果、可选因子健康状态和人工回填字段；它只辅助人工下单，不触发真实交易。
 - **真实成交回填与执行偏差分析（`live.execution_feedback`）**：人工在券商终端执行之后，把 `executed_qty`、`executed_price`、`operator`、`confirmed_at`、`execution_note` 回填到确认单，再运行 `scripts/build_execution_feedback.py`。输出路径为 `output/execution_feedback/<strategy>/`，用于统计 `FILLED/PARTIAL/OVERFILLED/NOT_EXECUTED/BLOCKED`、数量差异、金额差异和价格滑点。
 - **运行失败 / 异常检查（`live.paper_guard`）**：默认随日终脚本启用。目标权重为空、价格缺失、价格无效、目标权重日期或价格日期晚于运行日、运行后现金为负等属于 ERROR；价格日期过旧、所有订单被阻断、成交层全部跳过等属于 WARNING。
@@ -246,7 +249,7 @@ flowchart TB
 - **IC 与融合（最小切片）**：各因子日 IC 经 **`shift(1)` + 滚动均值** 得到非负、按日归一的 **列权**，对横截面 z-score 后的多列因子加权求和 → **FUSED 得分** 再参与 Top-K 回测。单因子各列回测仍仅用该列得分，**不受** IC 列权影响。关闭：`config.fusion_use_ic_weights=False` 或缺 IC 时回退 **`fuse_equal_weight_zscore`**。  
 - **IC 分布与稳定性**：`analysis.ic.ic_distribution_summary` 统计 p05/p25/median/p75/p95、正负 IC 占比和极端值；`ic_rolling_stability` 按 `Settings.ic_rolling_windows` 统计滚动均值末值、滚动均值正值比例等，用来判断因子是否只靠少数日期支撑。
 - **因子清洗与标准化**：`factors.preprocess` 对每个交易日、每列因子做横截面 winsorize 与 z-score，缓存到 `factor_panel_zscore.csv`；单因子排序仍可用原始因子，多因子融合复用同一套 z-score 口径。
-- **质量与成长因子**：`factors.factor_finance` 将毛利率、净利率、低资产负债率、营收增长和利润增长按 `ann_date` 对齐到交易日；只使用当时已经公告的数据，避免把未来财报提前放进回测。
+- **质量、成长与现金流因子**：`factors.factor_finance` 将毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理和经营现金流质量按 `ann_date` 对齐到交易日；只使用当时已经公告的数据，避免把未来财报提前放进回测。
 - **机器学习打分因子（`ML_SCORE`）**：`factors.factor_ml` 用基础因子作为特征，用未来 `ml_score_forward_days` 日收益作为标签，按时间滚动训练梯度提升类模型。预测日 `t` 的训练样本只允许使用 `feature_date + forward_days <= t` 的历史样本，避免标签泄漏。`ML_SCORE` 只是候选因子，仍需经过 IC、分组收益、样本外验证和回测。
 - **因子多头超额**：`analysis.factor_diagnostics` 不做复杂配权、不计交易成本，只看某个因子 Top-K 等权多头腿相对股票池等权基准的主动收益；它是判断“因子有没有多头解释力”的中间层，不替代完整回测。
 - **分组收益与单调性**：同一诊断层还会把每个调仓日的股票按因子从低到高分成 `Settings.factor_group_count` 组，计算每组到下一调仓日的平均收益。`top_minus_bottom_*` 看高分组减低分组，`monotonicity_score` 看长期分组均值是否随因子分数升高而递增。

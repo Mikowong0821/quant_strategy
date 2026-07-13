@@ -7,6 +7,7 @@ import pandas as pd
 
 from factors.preprocess import (
     cross_sectional_zscore,
+    industry_neutral_zscore,
     preprocess_factor_panel,
     winsorize_series,
 )
@@ -44,6 +45,47 @@ class TestFactorPreprocess(unittest.TestCase):
         self.assertEqual(z.shape, panel.shape)
         self.assertEqual(list(z.columns), ["F1"])
         self.assertEqual(z.index.names, ["date", "symbol"])
+
+    def test_industry_neutral_zscore_standardizes_within_industry(self) -> None:
+        day = pd.Timestamp("2024-01-01")
+        idx = pd.MultiIndex.from_product([[day], ["A", "B", "C", "D"]], names=["date", "symbol"])
+        panel = pd.DataFrame({"VALUE": [1.0, 3.0, 100.0, 300.0]}, index=idx)
+        industry = pd.Series(["Tech", "Tech", "Bank", "Bank"], index=idx, name="industry")
+
+        z = industry_neutral_zscore(
+            panel,
+            industry,
+            winsorize=False,
+            min_count=2,
+            min_industry_count=2,
+        )
+
+        self.assertAlmostEqual(float(z.loc[(day, "A"), "VALUE"]), -1.0)
+        self.assertAlmostEqual(float(z.loc[(day, "B"), "VALUE"]), 1.0)
+        self.assertAlmostEqual(float(z.loc[(day, "C"), "VALUE"]), -1.0)
+        self.assertAlmostEqual(float(z.loc[(day, "D"), "VALUE"]), 1.0)
+
+    def test_industry_neutral_zscore_falls_back_for_small_groups(self) -> None:
+        day = pd.Timestamp("2024-01-01")
+        idx = pd.MultiIndex.from_product([[day], ["A", "B", "C"]], names=["date", "symbol"])
+        panel = pd.DataFrame({"VALUE": [1.0, 2.0, 100.0]}, index=idx)
+        industry = pd.Series(["Tech", "Tech", "Solo"], index=idx, name="industry")
+
+        z = industry_neutral_zscore(
+            panel,
+            industry,
+            winsorize=False,
+            min_count=2,
+            min_industry_count=2,
+        )
+        global_z = cross_sectional_zscore(panel, winsorize=False)
+
+        self.assertAlmostEqual(float(z.loc[(day, "A"), "VALUE"]), -1.0)
+        self.assertAlmostEqual(float(z.loc[(day, "B"), "VALUE"]), 1.0)
+        self.assertAlmostEqual(
+            float(z.loc[(day, "C"), "VALUE"]),
+            float(global_z.loc[(day, "C"), "VALUE"]),
+        )
 
 
 if __name__ == "__main__":

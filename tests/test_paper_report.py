@@ -103,6 +103,56 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("## 运行检查", report)
             self.assertIn("stale_price_date", report)
 
+    def test_report_includes_factor_decay_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["factor_decay_monitor"] = pd.DataFrame(
+                [
+                    {
+                        "factor": "ML_SCORE",
+                        "status": "DEGRADED",
+                        "reasons": "validation_ic_mean_below_threshold",
+                        "validation_ic_mean": -0.02,
+                        "validation_positive_rate": 0.42,
+                        "validation_excess_ann_return": -0.1,
+                        "validation_top_minus_bottom_ann": -0.2,
+                        "validation_monotonicity_score": 0.2,
+                    },
+                    {
+                        "factor": "ROE",
+                        "status": "OK",
+                        "reasons": "",
+                        "validation_ic_mean": 0.03,
+                        "validation_positive_rate": 0.58,
+                        "validation_excess_ann_return": 0.12,
+                        "validation_top_minus_bottom_ann": 0.18,
+                        "validation_monotonicity_score": 0.8,
+                    },
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 因子健康与失效监控", report)
+            self.assertIn("- 整体状态：`DEGRADED`", report)
+            self.assertIn("- 风险因子数量：1", report)
+            self.assertIn("| ML_SCORE | DEGRADED | validation_ic_mean_below_threshold |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

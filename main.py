@@ -80,7 +80,7 @@ from live.cache_io import (
     save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
-from live.stock_pool import load_stock_pool
+from live.stock_pool import load_stock_pool, load_stock_pool_frame, normalize_ts_code
 from models.factor_weighting import build_factor_weight_summary
 from models.fusion import (
     fuse_equal_weight_zscore,
@@ -487,6 +487,73 @@ def _demo_price_wide() -> pd.DataFrame:
     return pd.DataFrame(px, index=days, columns=syms)
 
 
+def _industry_map_from_stock_pool(settings: Settings) -> dict[str, str]:
+    pool_path = settings.stock_pool_path
+    if pool_path is None or not Path(pool_path).is_file():
+        return {}
+    try:
+        pool = load_stock_pool_frame(pool_path, code_col=settings.stock_pool_code_col)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for rec in pool.to_dict("records"):
+        symbol = normalize_ts_code(rec.get("symbol"))
+        if not symbol:
+            continue
+        industry = str(rec.get("sub_industry") or "").strip()
+        if not industry:
+            industry = str(rec.get("theme") or "").strip()
+        if industry:
+            out[symbol] = industry
+    return out
+
+
+def _attach_industry_to_long_df(long_df: pd.DataFrame, settings: Settings) -> pd.DataFrame:
+    if long_df.empty or "ts_code" not in long_df.columns:
+        return long_df
+    industry_col = str(getattr(settings, "industry_col", "industry") or "industry")
+    if industry_col in long_df.columns and long_df[industry_col].notna().any():
+        return long_df
+    industry_map = _industry_map_from_stock_pool(settings)
+    if not industry_map:
+        return long_df
+    out = long_df.copy()
+    out["_norm_ts_code"] = out["ts_code"].map(normalize_ts_code)
+    out[industry_col] = out["_norm_ts_code"].map(industry_map).fillna("")
+    out = out.drop(columns=["_norm_ts_code"])
+    n_known = int((out[industry_col].astype(str).str.strip() != "").sum())
+    if n_known:
+        print("已从股票池补充行业字段 %r: %d 行" % (industry_col, n_known))
+    return out
+
+
+def _industry_series_from_long_df(
+    long_df: pd.DataFrame,
+    panel_index: pd.MultiIndex,
+    settings: Settings,
+) -> pd.Series | None:
+    industry_col = str(getattr(settings, "industry_col", "industry") or "industry")
+    need = {"trade_date", "ts_code", industry_col}
+    if long_df.empty or not need.issubset(long_df.columns):
+        return None
+    data = long_df[list(need)].copy()
+    data["trade_date"] = pd.to_datetime(data["trade_date"])
+    data["ts_code"] = data["ts_code"].map(normalize_ts_code)
+    data[industry_col] = data[industry_col].fillna("").astype(str).str.strip()
+    data = data[data[industry_col] != ""].drop_duplicates(["trade_date", "ts_code"], keep="last")
+    if data.empty:
+        return None
+    industry_wide = data.pivot(index="trade_date", columns="ts_code", values=industry_col).sort_index()
+    panel_dates = pd.Index(panel_index.get_level_values("date")).unique().sort_values()
+    industry_wide = industry_wide.reindex(panel_dates).ffill()
+    try:
+        industry_long = industry_wide.stack(future_stack=True)
+    except TypeError:
+        industry_long = industry_wide.stack(dropna=False)
+    industry_long.index = industry_long.index.set_names(["date", "symbol"])
+    return industry_long.reindex(panel_index)
+
+
 def _load_market_data(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     读取本地/远程行情数据，返回 `(long_df, prices_wide)`。
@@ -502,12 +569,14 @@ def _load_market_data(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
     if demo_path.is_file():
         print("加载本地数据:", demo_path)
         long_df = load_prices_from_csv(demo_path)
+        long_df = _attach_industry_to_long_df(long_df, settings)
         return long_df, long_to_wide(long_df, settings.price_col)
 
     cache_path = settings.tushare_price_cache_path
     if cache_path is not None and Path(cache_path).is_file():
         print("加载 Tushare 本地行情缓存:", cache_path)
         long_df = load_prices_from_csv(cache_path)
+        long_df = _attach_industry_to_long_df(long_df, settings)
         prices = long_to_wide(long_df, settings.price_col)
         print("本地缓存已对齐: %d 只股票, %d 个交易日" % (prices.shape[1], prices.shape[0]))
         return long_df, prices
@@ -526,6 +595,7 @@ def _load_market_data(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
             % (settings.backtest_start, settings.backtest_end, len(symbols))
         )
         long_df = fetch_daily_panel(symbols, settings.backtest_start, settings.backtest_end)
+        long_df = _attach_industry_to_long_df(long_df, settings)
         if cache_path is not None:
             Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
             long_df.to_csv(cache_path, index=False, date_format="%Y-%m-%d")
@@ -536,7 +606,9 @@ def _load_market_data(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
     except Exception as e:
         print("Tushare 不可用，回退合成数据:", e)
         prices = _demo_price_wide()
-        return wide_to_long(prices, settings.price_col), prices
+        long_df = wide_to_long(prices, settings.price_col)
+        long_df = _attach_industry_to_long_df(long_df, settings)
+        return long_df, prices
 
 
 def _resample_freq_alias(freq: str) -> str:
@@ -635,10 +707,24 @@ def main() -> None:
         print("机器学习打分因子已关闭: enable_ml_score=False")
 
     print("本次参与诊断/回测的因子顺序: %s" % factor_order)
-    panel_zscore = preprocess_factor_panel(panel)
+    industry_ser = _industry_series_from_long_df(long_df, panel.index, settings)
+    by_industry = bool(getattr(settings, "factor_standardize_by_industry", False)) and industry_ser is not None
+    panel_zscore = preprocess_factor_panel(
+        panel,
+        industry=industry_ser,
+        industry_col=str(getattr(settings, "industry_col", "industry") or "industry"),
+        by_industry=by_industry,
+        min_industry_count=int(getattr(settings, "factor_industry_min_count", 3)),
+    )
+    research_panel = panel_zscore
+    standardize_label = (
+        "行业内 winsorize + z-score（小行业回退全截面）"
+        if by_industry
+        else "横截面 winsorize + z-score"
+    )
     print(
-        "标准化面板: %d 行 × %d 列（横截面 winsorize + z-score）"
-        % (panel_zscore.shape[0], panel_zscore.shape[1])
+        "标准化面板: %d 行 × %d 列（%s）"
+        % (panel_zscore.shape[0], panel_zscore.shape[1], standardize_label)
     )
 
     data_quality_reports: dict[str, pd.DataFrame] = {}
@@ -713,10 +799,10 @@ def main() -> None:
         % settings.ic_forward_days
     )
     for fname in factor_order:
-        if fname not in panel.columns:
+        if fname not in research_panel.columns:
             print("【IC】%s 跳过: 面板中无该列\n" % fname)
             continue
-        col = panel[fname]
+        col = research_panel[fname]
         if col.notna().sum() == 0:
             print("【IC】%s 跳过: 整列无有效值\n" % fname)
             continue
@@ -743,7 +829,7 @@ def main() -> None:
         except Exception as e:
             print("【IC】%s 跳过: %s\n" % (fname, e))
     try:
-        sub_ic = panel[factor_order].dropna(axis=1, how="all")
+        sub_ic = research_panel[factor_order].dropna(axis=1, how="all")
         if sub_ic.shape[1] > 0:
             fused_ic, fusion_mode = _build_fused_zscore_panel(sub_ic, ic_by_name, settings)
             ic_f = daily_ic_spearman(
@@ -836,7 +922,7 @@ def main() -> None:
     print("========== 因子 Top-K 多头超额诊断 ==========\n")
     try:
         long_excess_summary, _ = batch_factor_long_excess(
-            panel,
+            research_panel,
             prices,
             factors=factor_order,
             top_k=settings.top_k,
@@ -866,7 +952,7 @@ def main() -> None:
     print("========== 因子分组收益与单调性 ==========\n")
     try:
         group_return_detail, group_return_summary = batch_factor_group_returns(
-            panel,
+            research_panel,
             prices,
             factors=factor_order,
             group_count=settings.factor_group_count,
@@ -928,7 +1014,7 @@ def main() -> None:
             print("【因子权重】跳过: %s\n" % e)
 
     try:
-        sub_weight = panel[factor_order].dropna(axis=1, how="all")
+        sub_weight = research_panel[factor_order].dropna(axis=1, how="all")
         if sub_weight.shape[1] > 0:
             (
                 factor_weight_train_summary,
@@ -959,7 +1045,7 @@ def main() -> None:
         print("【训练段综合权重】跳过: %s\n" % e)
 
     try:
-        sub_rolling = panel[factor_order].dropna(axis=1, how="all")
+        sub_rolling = research_panel[factor_order].dropna(axis=1, how="all")
         if sub_rolling.shape[1] > 0:
             (
                 fused_rolling_score_weighted,
@@ -993,7 +1079,7 @@ def main() -> None:
     print("========== 样本外验证与因子失效监控 ==========\n")
     try:
         out_of_sample_validation = build_out_of_sample_validation(
-            panel[factor_order].dropna(axis=1, how="all"),
+            research_panel[factor_order].dropna(axis=1, how="all"),
             prices,
             settings,
             factors=factor_order,
@@ -1067,10 +1153,10 @@ def main() -> None:
 
     print("\n========== 一、单因子回测（各列独立，横截面 Top-K + 配置持仓权重）==========\n")
     for fname in factor_order:
-        if fname not in panel.columns:
+        if fname not in research_panel.columns:
             print("【因子】%s 跳过: 面板中无该列\n" % fname)
             continue
-        col = panel[fname]
+        col = research_panel[fname]
         if col.notna().sum() == 0:
             print("【因子】%s 跳过: 整列无有效值\n" % fname)
             continue
@@ -1092,7 +1178,7 @@ def main() -> None:
 
     print("========== 二、多因子融合（IC rolling + 静态综合权重 + 滚动综合权重）==========\n")
     try:
-        sub = panel[factor_order].dropna(axis=1, how="all")
+        sub = research_panel[factor_order].dropna(axis=1, how="all")
         if sub.shape[1] == 0:
             print("【融合】跳过: 无有效因子列\n")
             return

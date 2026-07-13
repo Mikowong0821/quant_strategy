@@ -39,6 +39,8 @@ CONFIRM_COLUMNS = [
     "execution_note",
 ]
 
+FACTOR_HEALTH_SEVERITY = {"FAILED": 4, "DEGRADED": 3, "WATCH": 2, "OK": 1}
+
 
 def manual_confirmation_dir(settings: Settings, strategy: str) -> Path:
     safe = str(strategy).replace("/", "_")
@@ -73,16 +75,16 @@ def load_factor_decay_monitor(settings: Settings, path: Path | None = None) -> p
     return pd.read_csv(monitor_path)
 
 
-def _factor_health_summary(factor_monitor: pd.DataFrame | None) -> tuple[str, str]:
+def summarize_factor_health(factor_monitor: pd.DataFrame | None) -> tuple[str, str]:
+    """把因子失效监控表压缩成整体状态和原因说明。"""
     if factor_monitor is None or factor_monitor.empty or "status" not in factor_monitor.columns:
         return "UNKNOWN", "factor_monitor_missing"
 
     monitor = factor_monitor.copy()
     monitor["status"] = monitor["status"].astype(str).str.upper()
-    severity_order = {"FAILED": 4, "DEGRADED": 3, "WATCH": 2, "OK": 1}
-    monitor["_severity_rank"] = monitor["status"].map(severity_order).fillna(0).astype(int)
+    monitor["_severity_rank"] = monitor["status"].map(FACTOR_HEALTH_SEVERITY).fillna(0).astype(int)
     worst_rank = int(monitor["_severity_rank"].max()) if not monitor.empty else 0
-    status = next((k for k, v in severity_order.items() if v == worst_rank), "UNKNOWN")
+    status = next((k for k, v in FACTOR_HEALTH_SEVERITY.items() if v == worst_rank), "UNKNOWN")
     risky = monitor[monitor["_severity_rank"] >= 2].copy()
     if risky.empty:
         return status, "all_factors_ok"
@@ -94,6 +96,10 @@ def _factor_health_summary(factor_monitor: pd.DataFrame | None) -> tuple[str, st
         reasons = str(rec.get("reasons", "") or "-")
         parts.append("%s:%s:%s" % (factor, st, reasons))
     return status, ";".join(parts)
+
+
+def _factor_health_summary(factor_monitor: pd.DataFrame | None) -> tuple[str, str]:
+    return summarize_factor_health(factor_monitor)
 
 
 def _manual_action(check_status: str, factor_health_status: str) -> str:

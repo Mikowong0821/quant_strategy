@@ -83,6 +83,53 @@ def calc_finance_metric(
     return out
 
 
+def calc_finance_metric_to_price(
+    finance_df: pd.DataFrame,
+    prices_long: pd.DataFrame,
+    *,
+    metric_candidates: tuple[str, ...],
+    ts_code_col: str = "ts_code",
+    date_col: str = "trade_date",
+) -> pd.Series:
+    """
+    将每股财务指标除以收盘价，得到类似收益率的估值/现金流因子。
+
+    典型用途是 `fcff_ps / close`、`fcfe_ps / close` 或 `ocfps / close`。
+    这类指标比绝对现金流更适合进入横截面排序，因为它天然考虑了价格。
+    """
+    metric = calc_finance_metric(
+        finance_df,
+        prices_long,
+        metric_candidates=metric_candidates,
+        higher_is_better=True,
+        ts_code_col=ts_code_col,
+        date_col=date_col,
+    )
+    if metric.empty:
+        return metric
+
+    need_px = {date_col, ts_code_col, "close"}
+    missing_px = need_px - set(prices_long.columns)
+    if missing_px:
+        raise ValueError(f"prices_long 缺少列: {missing_px}")
+
+    px = prices_long[[date_col, ts_code_col, "close"]].copy()
+    px[date_col] = pd.to_datetime(px[date_col])
+    px["close"] = pd.to_numeric(px["close"], errors="coerce")
+    close = pd.Series(
+        px["close"].values,
+        index=pd.MultiIndex.from_arrays(
+            [px[date_col].values, px[ts_code_col].values],
+            names=["date", "symbol"],
+        ),
+        dtype=float,
+    )
+    close = close[~close.index.duplicated(keep="last")].sort_index()
+    out = metric / close.reindex(metric.index)
+    out = out.replace([np.inf, -np.inf], np.nan)
+    return out.sort_index()
+
+
 def calc_gross_margin(finance_df: pd.DataFrame, prices_long: pd.DataFrame) -> pd.Series:
     """毛利率因子，越高越好。"""
     return calc_finance_metric(
@@ -126,4 +173,34 @@ def calc_profit_growth(finance_df: pd.DataFrame, prices_long: pd.DataFrame) -> p
         finance_df,
         prices_long,
         metric_candidates=("netprofit_yoy", "profit_yoy", "q_profit_yoy", "dt_netprofit_yoy"),
+    )
+
+
+def calc_free_cash_flow_yield(finance_df: pd.DataFrame, prices_long: pd.DataFrame) -> pd.Series:
+    """
+    自由现金流收益率代理因子，越高越好。
+
+    优先使用每股自由现金流字段；若数据源没有严格 FCF 字段，则回退到每股经营现金流 /
+    每股现金流字段，作为现金流收益率代理。
+    """
+    return calc_finance_metric_to_price(
+        finance_df,
+        prices_long,
+        metric_candidates=("fcff_ps", "fcfe_ps", "free_cashflow_ps", "ocfps", "cfps"),
+    )
+
+
+def calc_cash_profit_quality(finance_df: pd.DataFrame, prices_long: pd.DataFrame) -> pd.Series:
+    """经营现金流质量因子，衡量利润或收入变成现金的能力，越高越好。"""
+    return calc_finance_metric(
+        finance_df,
+        prices_long,
+        metric_candidates=(
+            "ocf_to_profit",
+            "ocf_to_opincome",
+            "salescash_to_or",
+            "ocf_to_or",
+            "netprofit_cash_cover",
+            "cashflow_to_profit",
+        ),
     )

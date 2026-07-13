@@ -25,7 +25,12 @@ from live.paper_run_control import (
     load_trading_calendar_from_prices,
     validate_daily_run_control,
 )
-from live.manual_confirmation import load_factor_decay_monitor, save_manual_confirmation
+from live.manual_confirmation import (
+    FACTOR_HEALTH_SEVERITY,
+    load_factor_decay_monitor,
+    save_manual_confirmation,
+    summarize_factor_health,
+)
 from live.paper_runner import run_daily_paper_trade
 from live.paper_report import save_daily_paper_report
 
@@ -225,12 +230,12 @@ def run_daily_paper_from_outputs(
         guard_issues.extend(validate_daily_result(result))
         raise_on_guard_errors(guard_issues)
     result["guard_issues"] = guard_issues
+    factor_monitor = load_factor_decay_monitor(settings, factor_decay_monitor_path)
+    result["factor_decay_monitor"] = factor_monitor
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
         result.setdefault("paths", {})["paper_report"] = report_path
     if persist_outputs and generate_manual_confirmation:
-        factor_monitor = load_factor_decay_monitor(settings, factor_decay_monitor_path)
-        result["factor_decay_monitor"] = factor_monitor
         confirm_paths = save_manual_confirmation(
             settings,
             result,
@@ -248,6 +253,7 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     snapshot = result["account_snapshot"]
     paths = result.get("paths", {})
     guard_issues = result.get("guard_issues", [])
+    factor_monitor = result.get("factor_decay_monitor")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -283,6 +289,17 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
                     lines.append("  %s.%s=%s" % (key, sub_key, sub_value))
             else:
                 lines.append("  %s=%s" % (key, value))
+    factor_status, factor_reasons = summarize_factor_health(factor_monitor)
+    if factor_monitor is not None and not factor_monitor.empty:
+        monitor = factor_monitor.copy()
+        if "status" in monitor.columns:
+            status_series = monitor["status"].astype(str).str.upper()
+            risky_count = int(status_series.map(FACTOR_HEALTH_SEVERITY).fillna(0).ge(FACTOR_HEALTH_SEVERITY["WATCH"]).sum())
+        else:
+            risky_count = 0
+        lines.append("factor_health=%s risky_factors=%d reason=%s" % (factor_status, risky_count, factor_reasons))
+    else:
+        lines.append("factor_health=%s reason=%s" % (factor_status, factor_reasons))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))

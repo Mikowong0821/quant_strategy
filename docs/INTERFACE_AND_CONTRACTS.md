@@ -45,13 +45,13 @@
 
 ### 2.2 财务：`data/finance_data.csv`
 
-**最低必需列**（用于 PE、ROE、质量与成长因子；具体财报发布日对齐在因子层实现，契约只要求列存在）：
+**最低必需列**（用于 PE、ROE、质量、成长与现金流因子；具体财报发布日对齐在因子层实现，契约只要求列存在）：
 
 | 列名 | dtype | 说明 |
 |------|--------|------|
 | `ts_code` | str | 标的 |
 | `ann_date` | date | 公告日；财务因子按它 backward 对齐到交易日，避免未来函数 |
-| `eps` / `roe` / `grossprofit_margin` / `netprofit_margin` / `debt_to_assets` / `or_yoy` / `netprofit_yoy` 等 | float64 | 由具体因子声明子集；缺失则该 (date, symbol) 因子为 NaN |
+| `eps` / `roe` / `grossprofit_margin` / `netprofit_margin` / `debt_to_assets` / `or_yoy` / `netprofit_yoy` / `fcff_ps` / `fcfe_ps` / `ocfps` / `cfps` / `ocf_to_profit` / `ocf_to_or` 等 | float64 | 由具体因子声明子集；缺失则该 (date, symbol) 因子为 NaN |
 
 财务与行情对齐：**不做全局强制**；由 `factors/*` 在输出前将结果 reindex 到目标 `(date, symbol)` 网格。
 
@@ -123,16 +123,17 @@
 | `live.account_state` | `load_account_state(settings, strategy, default_cash=0.0)` | 策略名与默认现金 | 返回 `(cash, positions_df)`；状态不存在时返回默认现金和空持仓 |
 | `live.account_state` | `positions_from_trades(trades, current_positions=None, updated_at=None)` | 纸面交易日志和初始持仓 | 最新持仓 DataFrame，列含 `symbol/shares/available_shares/updated_at` |
 | `live.paper_runner` | `run_daily_paper_trade(settings, strategy, target_weights, latest_prices, trade_date, execution_mode=..., ...)` | `Settings`、策略名、目标权重、最新价格、交易日期、可选交易状态；内部读取纸面账户状态；执行模式支持 `paper_trading` / `simulated_broker` | 单日纸面运行结果 dict，含订单计划、订单预检查、券商订单回报、纸面交易日志、最新现金、最新持仓、账户快照与落盘路径 |
-| `live.paper_report` | `build_daily_paper_report(result)`、`save_daily_paper_report(settings, result)` | 单日纸面运行结果 dict；可读取 `paper_account/<strategy>/snapshots.csv` 计算上一快照变化 | Markdown 日报文本或 `output/paper_reports/<strategy>/<date>.md`；若存在 `broker_orders`，会展示统一券商订单回报 |
+| `live.paper_report` | `build_daily_paper_report(result)`、`save_daily_paper_report(settings, result)` | 单日纸面运行结果 dict；可读取 `paper_account/<strategy>/snapshots.csv` 计算上一快照变化；若 result 含 `factor_decay_monitor`，展示因子健康状态 | Markdown 日报文本或 `output/paper_reports/<strategy>/<date>.md`；若存在 `broker_orders`，会展示统一券商订单回报；若存在因子失效监控表，会展示 `OK/WATCH/DEGRADED/FAILED` 状态和关键验证指标 |
 | `live.manual_confirmation` | `build_manual_confirmation_sheet(result, factor_monitor=...)`、`save_manual_confirmation(settings, result, factor_monitor=...)` | 单日纸面运行结果 dict；可选 `factor_decay_monitor.csv` 读入表 | 人工确认 CSV / Markdown，默认写 `output/live_orders/<strategy>/<date>_manual_confirm.csv/.md`；只辅助人工复核，不自动下单 |
 | `live.execution_feedback` | `build_execution_feedback(manual_confirmation)`、`save_execution_feedback(settings, detail, summary)` | 人工确认 CSV / DataFrame，需含 `date/strategy/symbol/side/delta_shares/price/estimated_amount`，可选 `executed_qty/executed_price/operator/confirmed_at/execution_note` | 逐笔执行偏差表、汇总表和 Markdown 报告，默认写 `output/execution_feedback/<strategy>/<date>_execution_feedback.csv`、`*_execution_summary.csv`、`*_execution_feedback.md` |
 | `live.paper_guard` | `validate_daily_inputs(...)`、`validate_daily_result(result)`、`raise_on_guard_errors(issues)` | 目标权重、最新价格、运行日期、目标权重日期、价格日期、单日纸面运行结果 dict | `GuardIssue` 列表；ERROR 级问题可抛出 `DailyPaperGuardError`，WARNING 级问题供摘要和日报展示 |
 | `live.paper_run_control` | `load_trading_calendar_from_prices(path)`、`validate_daily_run_control(...)`、`has_paper_snapshot(...)` | 价格宽表缓存、策略名、运行日期、交易日日历、是否允许非交易日和重复运行 | 非交易日或重复运行时抛出 `DailyPaperRunControlError`；只读运行 `persist_outputs=False` 不阻断重复快照 |
-| `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV，可选关闭日报、人工确认单、guard 或 run control，可选 `--execution-mode simulated_broker` | 调用运行控制、异常检查与 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交、账户状态、Markdown 日报和人工确认单 |
+| `live.daily_paper_cli` / `scripts/run_daily_paper.py` | `run_daily_paper_from_outputs(...)` / CLI | 已有 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，可选交易状态 CSV 和因子失效监控 CSV，可选关闭日报、人工确认单、guard 或 run control，可选 `--execution-mode simulated_broker` | 调用运行控制、异常检查与 `run_daily_paper_trade`，打印日终摘要，并按配置写订单、检查、成交、账户状态、Markdown 日报和人工确认单；因子健康状态会进入摘要、日报和人工确认单 |
 | `live.paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | `run_scheduled_daily_paper(settings, daily_args=None, log_date=None)` / CLI | `Settings`、可选日志日期、透传给日终纸面交易的 CLI 参数 | 执行一次日终纸面交易，写 `output/scheduler_logs/<date>.log`，返回/退出码与日终纸面交易一致 |
 | `live.broker` | `BrokerAdapter` 协议 | 真实券商 / 模拟券商实现统一方法：`sync/get_account/get_cash/get_positions/get_orders/submit_order/cancel_order` | 交易适配器标准插座；上层不依赖具体券商 API |
 | `live.broker` | `SimulatedBroker` | 初始现金、当前持仓、最新价格、手续费率；可单笔 `submit_order`，也可 `submit_order_plan(order_plan, order_checks=...)` | 模拟立即成交，返回统一 `BrokerOrder` / 订单表；用于验证券商接口协议，不连接真实券商 |
 | `live.broker` | `RealBrokerConfig`、`RealBrokerReadOnlyAdapter` | 券商名、账户标识、只读模式；可注入账户 / 持仓 / 订单快照，未来真实券商 adapter 可覆盖 `sync` | 真实券商只读接入骨架；允许查询账户、持仓、订单，禁止 `submit_order/cancel_order` |
+| `live.broker_factory` | `create_broker_adapter(settings, ...)`、`build_broker_config(settings)` | `Settings.broker_mode`、`broker_provider`、`broker_account_id`，以及可选现金、持仓、价格、账户和订单快照 | 按配置创建 `SimulatedBroker` 或只读 Adapter；真实交易模式当前明确报错，未来 QMT / PTrade / 掘金 Adapter 在这里注册 |
 | `live.broker_reconcile` | `reconcile_paper_with_broker(...)`、`save_reconciliation_outputs(...)` | `Settings`、策略名、只读 `BrokerAdapter`、对账日期和容忍阈值 | 账户差异表、持仓差异表、问题列表，以及 `output/broker_reconciliation/<strategy>/` 下的 CSV / Markdown 报告 |
 | `scripts/reconcile_paper_broker.py` | CLI | 纸面账户状态、券商账户 CSV、券商持仓 CSV | 读取外部导出的只读券商快照，与纸面账户做对账，不下单、不撤单 |
 | `scripts/build_execution_feedback.py` | CLI | 人工确认 CSV；默认读取 `output/live_orders/<strategy>/<date>_manual_confirm.csv`，也可用 `--manual-confirm` 指定 | 调用 `live.execution_feedback`，生成真实成交回填与执行偏差报告；不连接券商、不修改账户 |
@@ -190,6 +191,8 @@
 | `max_position_weight` | 单票目标权重上限；默认 `0.4`，目标权重超过上限时裁剪并重新分配，若因持仓数过少不可行则保留原归一权重 |
 | `max_industry_weight` | 单个行业目标权重上限；默认 `0` 表示关闭，设为 `(0, 1)` 后限制行业暴露 |
 | `industry_col` | 行业分类字段名；默认 `industry`，可来自 `long_prices` 或 `industry_data` |
+| `factor_standardize_by_industry` | 因子研究面板是否按行业内标准化；默认 `True`，缺行业数据时回退普通横截面标准化 |
+| `factor_industry_min_count` | 行业内标准化最小有效样本数；行业样本不足时该行业回退全股票池横截面 z-score |
 | `target_volatility` | 组合目标年化波动；默认 `0` 表示关闭，开启后只在估算波动超目标时降低股票仓位 |
 | `volatility_target_lookback_days` / `volatility_target_min_obs` | 目标波动估算使用的历史收益窗口和最少样本数 |
 | `min_positions` / `min_positions_exposure` | 最小有效目标持仓数；不足时把股票总仓位缩到该 exposure，剩余保留现金 |
@@ -213,7 +216,7 @@
 
 | 函数 / 脚本 | 输入 | 输出 | 说明 |
 |---|---|---|---|
-| `live.stock_pool.load_stock_pool_frame` | Excel/CSV 股票池，含 `股票代码`，可选 `股票简称`、`主题`、`子行业`、`是否启用` | 标准化 DataFrame：`symbol/name/theme/sub_industry/enabled/raw_symbol/source_path` | 保留人工研究池元信息 |
+| `live.stock_pool.load_stock_pool_frame` | Excel/CSV 股票池，含 `股票代码`，可选 `股票简称`、`主题`、`子行业`、`分类`、`是否启用` | 标准化 DataFrame：`symbol/name/theme/sub_industry/enabled/raw_symbol/source_path`；若无 `子行业` 但有 `分类`，会把 `分类` 写入 `sub_industry` | 保留人工研究池元信息，并为行业内标准化 / 行业约束提供行业字段 |
 | `live.stock_pool.build_stock_pool_filter_report` | 股票池 DataFrame、价格数据、可选交易状态、日期、覆盖率/流动性阈值 | 逐股票过滤报告：`active/exclude_reason/latest_price/price_coverage/avg_volume/avg_amount/is_suspended/is_limit_up/is_limit_down` | 把人工研究池过滤成当日可用池 |
 | `live.stock_pool.active_universe_from_report` | 过滤报告 | active universe DataFrame | 只保留 `active=True` 的股票 |
 | `scripts/build_live_universe.py` | `--stock-pool`、`--prices`、可选 `--trade-status`、`--trade-date` | `output/live_universe/.../stock_pool_filter_report_<date>.csv` 与 `active_universe_<date>.csv` | 券商接口前的目标池确认入口 |

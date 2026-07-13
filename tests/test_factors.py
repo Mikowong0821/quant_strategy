@@ -8,7 +8,14 @@ from unittest.mock import patch
 import pandas as pd
 
 from config import get_settings
-from factors.factor_finance import calc_gross_margin, calc_low_debt_to_assets, calc_profit_growth, calc_revenue_growth
+from factors.factor_finance import (
+    calc_cash_profit_quality,
+    calc_free_cash_flow_yield,
+    calc_gross_margin,
+    calc_low_debt_to_assets,
+    calc_profit_growth,
+    calc_revenue_growth,
+)
 from factors.factor_momentum import calc_momentum
 from factors.factor_reversal import calc_reversal
 from factors.factor_volume import calc_volume_ratio
@@ -90,6 +97,8 @@ class TestPriceVolumeFactors(unittest.TestCase):
                     "debt_to_assets": 30.0,
                     "or_yoy": 10.0,
                     "netprofit_yoy": 20.0,
+                    "fcff_ps": 2.0,
+                    "ocf_to_profit": 120.0,
                 },
                 {
                     "ts_code": "BBB",
@@ -98,6 +107,8 @@ class TestPriceVolumeFactors(unittest.TestCase):
                     "debt_to_assets": 60.0,
                     "or_yoy": -5.0,
                     "netprofit_yoy": -10.0,
+                    "fcff_ps": 1.0,
+                    "ocf_to_profit": 80.0,
                 },
             ]
         )
@@ -106,12 +117,16 @@ class TestPriceVolumeFactors(unittest.TestCase):
         low_debt = calc_low_debt_to_assets(finance, prices_long)
         revenue_growth = calc_revenue_growth(finance, prices_long)
         profit_growth = calc_profit_growth(finance, prices_long)
+        fcf_yield = calc_free_cash_flow_yield(finance, prices_long)
+        cash_quality = calc_cash_profit_quality(finance, prices_long)
 
         self.assertTrue(pd.isna(gross.loc[(days[1], "AAA")]))
         self.assertAlmostEqual(float(gross.loc[(days[2], "AAA")]), 40.0)
         self.assertAlmostEqual(float(low_debt.loc[(days[2], "AAA")]), -30.0)
         self.assertAlmostEqual(float(revenue_growth.loc[(days[2], "AAA")]), 10.0)
         self.assertAlmostEqual(float(profit_growth.loc[(days[2], "AAA")]), 20.0)
+        self.assertAlmostEqual(float(fcf_yield.loc[(days[2], "AAA")]), 2.0 / 10.0)
+        self.assertAlmostEqual(float(cash_quality.loc[(days[2], "AAA")]), 120.0)
 
     def test_build_panel_contains_finance_extension_factors(self) -> None:
         days = pd.bdate_range("2024-01-01", periods=80)
@@ -143,6 +158,8 @@ class TestPriceVolumeFactors(unittest.TestCase):
                     "debt_to_assets": 30.0,
                     "or_yoy": 20.0,
                     "netprofit_yoy": 25.0,
+                    "fcff_ps": 2.0,
+                    "ocf_to_profit": 120.0,
                 },
                 {
                     "ts_code": "BBB",
@@ -154,6 +171,8 @@ class TestPriceVolumeFactors(unittest.TestCase):
                     "debt_to_assets": 50.0,
                     "or_yoy": 5.0,
                     "netprofit_yoy": 7.0,
+                    "fcff_ps": 0.5,
+                    "ocf_to_profit": 70.0,
                 },
             ]
         )
@@ -167,6 +186,8 @@ class TestPriceVolumeFactors(unittest.TestCase):
             "LOW_DEBT_TO_ASSETS",
             "REVENUE_GROWTH",
             "PROFIT_GROWTH",
+            "FREE_CASH_FLOW_YIELD",
+            "CASH_PROFIT_QUALITY",
         ):
             self.assertIn(col, panel.columns)
             self.assertGreater(int(panel[col].notna().sum()), 0)

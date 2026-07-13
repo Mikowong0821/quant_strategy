@@ -13,7 +13,7 @@ from config import Settings
 
 _DEFAULT_NAME_COLUMNS = ("股票简称", "name", "symbol_name", "证券简称")
 _DEFAULT_THEME_COLUMNS = ("主题", "分类", "theme", "category")
-_DEFAULT_SUB_INDUSTRY_COLUMNS = ("子行业", "sub_industry", "industry")
+_DEFAULT_SUB_INDUSTRY_COLUMNS = ("子行业", "sub_industry", "industry", "分类", "category")
 _DEFAULT_ENABLED_COLUMNS = ("是否启用", "启用", "enabled", "active")
 
 

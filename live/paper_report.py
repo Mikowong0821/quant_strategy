@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from config import Settings
+from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
 
 
 def paper_report_dir(settings: Settings, strategy: str) -> Path:
@@ -90,6 +91,79 @@ def _markdown_table(
     return "\n".join(lines) + "\n"
 
 
+def _factor_health_section(factor_monitor: pd.DataFrame | None) -> list[str]:
+    status, reasons = summarize_factor_health(factor_monitor)
+    lines = [
+        "## 因子健康与失效监控",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 状态原因：%s" % reasons,
+    ]
+    if factor_monitor is None or factor_monitor.empty:
+        lines.extend(
+            [
+                "- 监控明细：未找到因子失效监控表，默认路径为 `output/factor_validation/factor_decay_monitor.csv`。",
+                "",
+            ]
+        )
+        return lines
+
+    monitor = factor_monitor.copy()
+    if "status" in monitor.columns:
+        monitor["status"] = monitor["status"].astype(str).str.upper()
+        monitor["_severity_rank"] = monitor["status"].map(FACTOR_HEALTH_SEVERITY).fillna(0).astype(int)
+    else:
+        monitor["status"] = "UNKNOWN"
+        monitor["_severity_rank"] = 0
+    counts = monitor["status"].value_counts().to_dict()
+    risky_count = int((monitor["_severity_rank"] >= FACTOR_HEALTH_SEVERITY["WATCH"]).sum())
+    count_parts = ["%s=%d" % (key, int(counts.get(key, 0))) for key in ["OK", "WATCH", "DEGRADED", "FAILED"]]
+    lines.extend(
+        [
+            "- 因子数量：%d" % int(len(monitor)),
+            "- 风险因子数量：%d" % risky_count,
+            "- 状态分布：%s" % "，".join(count_parts),
+            "",
+        ]
+    )
+
+    sort_cols = ["_severity_rank"]
+    ascending = [False]
+    if "factor" in monitor.columns:
+        sort_cols.append("factor")
+        ascending.append(True)
+    display = monitor.sort_values(sort_cols, ascending=ascending)
+    lines.extend(
+        [
+            _markdown_table(
+                display,
+                [
+                    "factor",
+                    "status",
+                    "reasons",
+                    "validation_ic_mean",
+                    "validation_positive_rate",
+                    "validation_excess_ann_return",
+                    "validation_top_minus_bottom_ann",
+                    "validation_monotonicity_score",
+                ],
+                [
+                    "因子",
+                    "状态",
+                    "原因",
+                    "验证期IC均值",
+                    "验证期IC胜率",
+                    "验证期多头超额",
+                    "验证期Top-Bottom",
+                    "单调性",
+                ],
+                max_rows=30,
+            )
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -111,6 +185,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     n_filled = int((trades["fill_status"] == "FILLED").sum()) if not trades.empty else 0
     n_skipped = int((trades["fill_status"] == "SKIPPED").sum()) if not trades.empty else 0
     guard_issues = list(result.get("guard_issues", []) or [])
+    factor_monitor = result.get("factor_decay_monitor")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -161,6 +236,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
         )
     else:
         lines.extend(["## 较上一快照变化", "", "暂无上一快照。", ""])
+
+    lines.extend(_factor_health_section(factor_monitor))
 
     blocked = checks[checks["check_status"] == "BLOCK"] if not checks.empty else checks
     lines.extend(

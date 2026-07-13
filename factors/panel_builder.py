@@ -9,6 +9,8 @@ import pandas as pd
 from backtest.backtest_utils import long_to_wide, prices_to_wide_close, to_returns, wide_to_long
 from config import Settings
 from factors.factor_finance import (
+    calc_cash_profit_quality,
+    calc_free_cash_flow_yield,
     calc_gross_margin,
     calc_low_debt_to_assets,
     calc_net_margin,
@@ -36,6 +38,8 @@ DEFAULT_FACTOR_ORDER = [
     "LOW_DEBT_TO_ASSETS",
     "REVENUE_GROWTH",
     "PROFIT_GROWTH",
+    "FREE_CASH_FLOW_YIELD",
+    "CASH_PROFIT_QUALITY",
 ]
 
 
@@ -141,6 +145,8 @@ def build_four_factor_panel(
         low_debt = pd.Series(index=idx, dtype=float)
         revenue_growth = pd.Series(index=idx, dtype=float)
         profit_growth = pd.Series(index=idx, dtype=float)
+        free_cash_flow_yield = pd.Series(index=idx, dtype=float)
+        cash_profit_quality = pd.Series(index=idx, dtype=float)
     else:
         pe = _safe_finance_factor(calc_pe, fina, long_px, idx)
         roe = _safe_finance_factor(calc_roe, fina, long_px, idx)
@@ -149,6 +155,8 @@ def build_four_factor_panel(
         low_debt = _safe_finance_factor(calc_low_debt_to_assets, fina, long_px, idx)
         revenue_growth = _safe_finance_factor(calc_revenue_growth, fina, long_px, idx)
         profit_growth = _safe_finance_factor(calc_profit_growth, fina, long_px, idx)
+        free_cash_flow_yield = _safe_finance_factor(calc_free_cash_flow_yield, fina, long_px, idx)
+        cash_profit_quality = _safe_finance_factor(calc_cash_profit_quality, fina, long_px, idx)
 
     panel = pd.concat(
         {
@@ -164,6 +172,8 @@ def build_four_factor_panel(
             "LOW_DEBT_TO_ASSETS": low_debt,
             "REVENUE_GROWTH": revenue_growth,
             "PROFIT_GROWTH": profit_growth,
+            "FREE_CASH_FLOW_YIELD": free_cash_flow_yield,
+            "CASH_PROFIT_QUALITY": cash_profit_quality,
         },
         axis=1,
     )

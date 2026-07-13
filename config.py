@@ -48,6 +48,9 @@ class Settings:
     ml_score_min_train_rows: int = 100
     ml_score_refit_every_days: int = 20
     ml_score_random_state: int = 42
+    # 因子标准化：默认按行业内横截面 z-score；缺行业或行业样本太少时回退全股票池 z-score。
+    factor_standardize_by_industry: bool = True
+    factor_industry_min_count: int = 3
     # IC：因子 @ 日 t 与前瞻收盘收益 close(t+h)/close(t)-1 的截面 Spearman；h=1 为最常见日频口径
     ic_forward_days: int = 1
     # IC 稳定性诊断：对日 IC 做滚动均值/波动/正值占比统计的窗口。
@@ -117,6 +120,12 @@ def get_settings() -> Settings:
     broker_mode = os.environ.get("QUANT_BROKER_MODE", "").strip() or Settings.broker_mode
     broker_provider = os.environ.get("QUANT_BROKER_PROVIDER", "").strip() or Settings.broker_provider
     broker_account_id = os.environ.get("QUANT_BROKER_ACCOUNT_ID", "").strip() or Settings.broker_account_id
+    standardize_by_industry_env = os.environ.get("QUANT_FACTOR_STANDARDIZE_BY_INDUSTRY", "").strip().lower()
+    standardize_by_industry = (
+        standardize_by_industry_env in {"1", "true", "yes", "y", "on"}
+        if standardize_by_industry_env
+        else Settings.factor_standardize_by_industry
+    )
     force_final_rebalance = os.environ.get("QUANT_FORCE_FINAL_REBALANCE", "").strip().lower() in {
         "1",
         "true",
@@ -135,6 +144,7 @@ def get_settings() -> Settings:
         broker_mode=broker_mode,
         broker_provider=broker_provider,
         broker_account_id=broker_account_id,
+        factor_standardize_by_industry=standardize_by_industry,
     )
 
 

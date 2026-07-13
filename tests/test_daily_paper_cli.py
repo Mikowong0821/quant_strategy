@@ -81,6 +81,55 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertIn("paper_report", result["paths"])
             self.assertIn("manual_confirmation", result["paths"])
 
+    def test_run_from_outputs_adds_factor_health_to_report_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            monitor_path = settings.output_dir / "factor_validation" / "factor_decay_monitor.csv"
+            monitor_path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "factor": "ML_SCORE",
+                        "status": "WATCH",
+                        "reasons": "validation_positive_rate_below_threshold",
+                        "validation_ic_mean": 0.01,
+                        "validation_positive_rate": 0.45,
+                    },
+                ]
+            ).to_csv(monitor_path, index=False)
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                factor_decay_monitor_path=monitor_path,
+            )
+            summary = format_daily_paper_summary(result)
+            report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
+            report = report_path.read_text(encoding="utf-8")
+
+            self.assertIn("factor_health=WATCH", summary)
+            self.assertIn("risky_factors=1", summary)
+            self.assertIn("## 因子健康与失效监控", report)
+            self.assertIn("| ML_SCORE | WATCH | validation_positive_rate_below_threshold |", report)
+
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(
