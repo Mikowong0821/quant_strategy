@@ -31,6 +31,18 @@ from analysis.data_quality import (
     rebalance_coverage,
 )
 from analysis.factor_diagnostics import batch_factor_group_returns, batch_factor_long_excess
+from analysis.factor_composite import build_factor_composite_scores
+from analysis.factor_redundancy import (
+    build_factor_redundancy_report,
+    factor_cross_sectional_correlation,
+    prune_redundant_factors,
+)
+from analysis.factor_selection import build_factor_selection_table, selected_factors_for_fusion
+from analysis.style_exposure import (
+    batch_style_exposure,
+    style_exposure_return_link,
+    summarize_style_exposure,
+)
 from analysis.factor_validation import (
     build_factor_decay_monitor,
     build_out_of_sample_validation,
@@ -77,6 +89,7 @@ from live.cache_io import (
     save_run_config,
     save_data_quality_reports,
     save_factor_diagnostics,
+    save_style_exposure_outputs,
     save_turnover_logs,
 )
 from live.data_feed import fetch_daily_panel, load_prices_from_csv
@@ -913,12 +926,19 @@ def main() -> None:
     factor_weight_summary = pd.DataFrame()
     factor_weight_train_summary = pd.DataFrame()
     rolling_factor_weight_log = pd.DataFrame()
+    factor_selection_summary = pd.DataFrame()
+    factor_composite_components = pd.DataFrame()
+    factor_composite_scores = pd.DataFrame()
+    factor_correlation_matrix = pd.DataFrame()
+    factor_correlation_days = pd.DataFrame()
+    factor_redundancy_report = pd.DataFrame()
     out_of_sample_validation = pd.DataFrame()
     factor_decay_monitor = pd.DataFrame()
     score_weighted_weights_by_factor: dict[str, float] = {}
     score_weighted_meta: dict[str, object] = {}
     fused_rolling_score_weighted = pd.Series(dtype=float)
     rolling_score_weighted_meta: dict[str, object] = {}
+    fusion_factor_order = list(factor_order)
     print("========== 因子 Top-K 多头超额诊断 ==========\n")
     try:
         long_excess_summary, _ = batch_factor_long_excess(
@@ -1013,69 +1033,6 @@ def main() -> None:
         except Exception as e:
             print("【因子权重】跳过: %s\n" % e)
 
-    try:
-        sub_weight = research_panel[factor_order].dropna(axis=1, how="all")
-        if sub_weight.shape[1] > 0:
-            (
-                factor_weight_train_summary,
-                score_weighted_weights_by_factor,
-                score_weighted_meta,
-            ) = _build_train_factor_weight_summary(sub_weight, prices, settings)
-            print("========== 训练段综合权重（用于验证段 FUSED_SCORE_WEIGHTED）==========\n")
-            print(
-                "【训练/验证】train=%s ~ %s；test=%s ~ %s"
-                % (
-                    pd.Timestamp(score_weighted_meta["train_start"]).strftime("%Y-%m-%d"),
-                    pd.Timestamp(score_weighted_meta["train_end"]).strftime("%Y-%m-%d"),
-                    pd.Timestamp(score_weighted_meta["test_start"]).strftime("%Y-%m-%d"),
-                    pd.Timestamp(score_weighted_meta["test_end"]).strftime("%Y-%m-%d"),
-                )
-            )
-            for rec in factor_weight_train_summary.to_dict("records"):
-                print(
-                    "【训练权重】%s  score=%.4f  weight=%.2f%%"
-                    % (
-                        rec["factor"],
-                        rec["factor_score"],
-                        rec["fusion_weight"] * 100.0,
-                    )
-                )
-            print()
-    except Exception as e:
-        print("【训练段综合权重】跳过: %s\n" % e)
-
-    try:
-        sub_rolling = research_panel[factor_order].dropna(axis=1, how="all")
-        if sub_rolling.shape[1] > 0:
-            (
-                fused_rolling_score_weighted,
-                rolling_factor_weight_log,
-                rolling_score_weighted_meta,
-            ) = _build_rolling_score_weighted_fusion(sub_rolling, prices, settings)
-            print("========== 滚动综合权重（用于 FUSED_ROLLING_SCORE_WEIGHTED）==========\n")
-            if not rolling_factor_weight_log.empty:
-                last_dt = pd.Timestamp(rolling_factor_weight_log["date"].max())
-                latest = rolling_factor_weight_log[rolling_factor_weight_log["date"] == last_dt]
-                print(
-                    "【滚动权重】共 %d 个调仓日；最近一期=%s"
-                    % (
-                        int(rolling_score_weighted_meta.get("rolling_weight_rebalances", 0)),
-                        last_dt.strftime("%Y-%m-%d"),
-                    )
-                )
-                for rec in latest.to_dict("records"):
-                    print(
-                        "  %s  final_weight=%.2f%%  reason=%s"
-                        % (
-                            rec["factor"],
-                            rec["final_weight"] * 100.0,
-                            rec["reason"],
-                        )
-                    )
-            print()
-    except Exception as e:
-        print("【滚动综合权重】跳过: %s\n" % e)
-
     print("========== 样本外验证与因子失效监控 ==========\n")
     try:
         out_of_sample_validation = build_out_of_sample_validation(
@@ -1110,6 +1067,177 @@ def main() -> None:
     except Exception as e:
         print("【样本外】跳过: %s\n" % e)
 
+    print("========== 因子入选与剔除 ==========\n")
+    try:
+        coverage_frame = data_quality_reports.get("factor_coverage", pd.DataFrame())
+        factor_selection_summary = build_factor_selection_table(
+            factors=factor_order,
+            factor_coverage=coverage_frame,
+            factor_weight_summary=factor_weight_summary,
+            factor_decay_monitor=factor_decay_monitor,
+        )
+        fusion_factor_order = selected_factors_for_fusion(factor_selection_summary, factor_order)
+        if factor_selection_summary.empty:
+            print("【因子准入】跳过: 无有效准入结果，主融合使用原始因子池\n")
+        else:
+            for rec in factor_selection_summary.to_dict("records"):
+                print(
+                    "【因子准入】%s  decision=%s  selected=%s  coverage=%.2f%%  score=%.4f  reasons=%s"
+                    % (
+                        rec["factor"],
+                        rec["decision"],
+                        rec["selected_for_fusion"],
+                        float(rec["coverage"]) * 100.0 if pd.notna(rec["coverage"]) else float("nan"),
+                        float(rec["factor_score"]) if pd.notna(rec["factor_score"]) else float("nan"),
+                        rec["reasons"] or "-",
+                    )
+                )
+            print("【因子准入】主融合候选池: %s\n" % fusion_factor_order)
+    except Exception as e:
+        fusion_factor_order = list(factor_order)
+        print("【因子准入】跳过: %s；主融合使用原始因子池\n" % e)
+
+    print("========== 因子相关性与冗余分析 ==========\n")
+    try:
+        factor_correlation_matrix, factor_correlation_days = factor_cross_sectional_correlation(
+            research_panel[factor_order].dropna(axis=1, how="all"),
+            factors=factor_order,
+            method="spearman",
+            min_symbols=max(5, int(settings.top_k)),
+        )
+        factor_redundancy_report = build_factor_redundancy_report(
+            factor_correlation_matrix,
+            factor_correlation_days,
+            selection=factor_selection_summary,
+            threshold=0.70,
+            min_days=max(20, int(settings.rolling_factor_weight_min_days // 2)),
+        )
+        before_redundancy = list(fusion_factor_order)
+        fusion_factor_order = prune_redundant_factors(fusion_factor_order, factor_redundancy_report)
+        if factor_redundancy_report.empty:
+            print("【因子冗余】未发现 abs(corr) >= 0.70 且有效天数充足的高相关因子对\n")
+        else:
+            for rec in factor_redundancy_report.head(10).to_dict("records"):
+                print(
+                    "【因子冗余】%s vs %s  corr=%.4f  days=%d  keep=%s  drop=%s  reason=%s"
+                    % (
+                        rec["factor_a"],
+                        rec["factor_b"],
+                        rec["correlation"],
+                        rec["n_days"],
+                        rec["recommended_keep"],
+                        rec["recommended_drop"],
+                        rec["reason"],
+                    )
+                )
+            print("【因子冗余】准入候选池: %s" % before_redundancy)
+            print("【因子冗余】去冗余后候选池: %s\n" % fusion_factor_order)
+    except Exception as e:
+        print("【因子冗余】跳过: %s；主融合沿用准入候选池\n" % e)
+
+    print("========== 因子分层与复合因子体系 ==========\n")
+    try:
+        factor_composite_scores, factor_composite_components = build_factor_composite_scores(
+            research_panel[factor_order].dropna(axis=1, how="all"),
+            eligible_factors=fusion_factor_order,
+            min_components=1,
+        )
+        if factor_composite_scores.empty:
+            print("【复合因子】跳过: 去冗余候选池无法形成有效风格层，主融合沿用原始候选因子\n")
+        else:
+            research_panel = pd.concat([research_panel, factor_composite_scores], axis=1)
+            raw_fusion_factors = list(fusion_factor_order)
+            fusion_factor_order = list(factor_composite_scores.columns)
+            for cname in fusion_factor_order:
+                try:
+                    ic_comp = daily_ic_spearman(
+                        factor_composite_scores[cname],
+                        prices,
+                        forward_days=settings.ic_forward_days,
+                    )
+                    if ic_comp.dropna().shape[0] > 0:
+                        ic_by_name[cname] = ic_comp
+                except Exception as ic_exc:
+                    print("【复合因子】%s IC 计算跳过: %s" % (cname, ic_exc))
+            for rec in factor_composite_components.to_dict("records"):
+                print(
+                    "【复合因子】%s  components=%s  coverage=%.2f%%"
+                    % (
+                        rec["composite_factor"],
+                        rec["eligible_components"] or "-",
+                        float(rec["coverage"]) * 100.0,
+                    )
+                )
+            print("【复合因子】原始去冗余候选池: %s" % raw_fusion_factors)
+            print("【复合因子】主融合改用风格层候选池: %s\n" % fusion_factor_order)
+    except Exception as e:
+        print("【复合因子】跳过: %s；主融合沿用去冗余原始因子池\n" % e)
+
+    try:
+        sub_weight = research_panel[fusion_factor_order].dropna(axis=1, how="all")
+        if sub_weight.shape[1] > 0:
+            (
+                factor_weight_train_summary,
+                score_weighted_weights_by_factor,
+                score_weighted_meta,
+            ) = _build_train_factor_weight_summary(sub_weight, prices, settings)
+            print("========== 训练段综合权重（用于验证段 FUSED_SCORE_WEIGHTED）==========\n")
+            print(
+                "【训练/验证】train=%s ~ %s；test=%s ~ %s；候选因子=%s"
+                % (
+                    pd.Timestamp(score_weighted_meta["train_start"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["train_end"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["test_start"]).strftime("%Y-%m-%d"),
+                    pd.Timestamp(score_weighted_meta["test_end"]).strftime("%Y-%m-%d"),
+                    list(sub_weight.columns),
+                )
+            )
+            for rec in factor_weight_train_summary.to_dict("records"):
+                print(
+                    "【训练权重】%s  score=%.4f  weight=%.2f%%"
+                    % (
+                        rec["factor"],
+                        rec["factor_score"],
+                        rec["fusion_weight"] * 100.0,
+                    )
+                )
+            print()
+    except Exception as e:
+        print("【训练段综合权重】跳过: %s\n" % e)
+
+    try:
+        sub_rolling = research_panel[fusion_factor_order].dropna(axis=1, how="all")
+        if sub_rolling.shape[1] > 0:
+            (
+                fused_rolling_score_weighted,
+                rolling_factor_weight_log,
+                rolling_score_weighted_meta,
+            ) = _build_rolling_score_weighted_fusion(sub_rolling, prices, settings)
+            print("========== 滚动综合权重（用于 FUSED_ROLLING_SCORE_WEIGHTED）==========\n")
+            if not rolling_factor_weight_log.empty:
+                last_dt = pd.Timestamp(rolling_factor_weight_log["date"].max())
+                latest = rolling_factor_weight_log[rolling_factor_weight_log["date"] == last_dt]
+                print(
+                    "【滚动权重】共 %d 个调仓日；最近一期=%s；候选因子=%s"
+                    % (
+                        int(rolling_score_weighted_meta.get("rolling_weight_rebalances", 0)),
+                        last_dt.strftime("%Y-%m-%d"),
+                        list(sub_rolling.columns),
+                    )
+                )
+                for rec in latest.to_dict("records"):
+                    print(
+                        "  %s  final_weight=%.2f%%  reason=%s"
+                        % (
+                            rec["factor"],
+                            rec["final_weight"] * 100.0,
+                            rec["reason"],
+                        )
+                    )
+            print()
+    except Exception as e:
+        print("【滚动综合权重】跳过: %s\n" % e)
+
     if settings.persist_run_outputs and (
         not long_excess_summary.empty
         or not group_return_detail.empty
@@ -1117,6 +1245,11 @@ def main() -> None:
         or not factor_weight_summary.empty
         or not factor_weight_train_summary.empty
         or not rolling_factor_weight_log.empty
+        or not factor_selection_summary.empty
+        or not factor_composite_components.empty
+        or not factor_composite_scores.empty
+        or not factor_correlation_matrix.empty
+        or not factor_redundancy_report.empty
         or not out_of_sample_validation.empty
         or not factor_decay_monitor.empty
     ):
@@ -1129,6 +1262,12 @@ def main() -> None:
                 factor_weight_summary=factor_weight_summary,
                 factor_weight_train_summary=factor_weight_train_summary,
                 rolling_factor_weight_log=rolling_factor_weight_log,
+                factor_selection_summary=factor_selection_summary,
+                factor_composite_components=factor_composite_components,
+                factor_composite_scores=factor_composite_scores,
+                factor_correlation_matrix=factor_correlation_matrix,
+                factor_correlation_days=factor_correlation_days,
+                factor_redundancy_report=factor_redundancy_report,
             )
             print(
                 "因子诊断已保存: %s"
@@ -1178,7 +1317,7 @@ def main() -> None:
 
     print("========== 二、多因子融合（IC rolling + 静态综合权重 + 滚动综合权重）==========\n")
     try:
-        sub = research_panel[factor_order].dropna(axis=1, how="all")
+        sub = research_panel[fusion_factor_order].dropna(axis=1, how="all")
         if sub.shape[1] == 0:
             print("【融合】跳过: 无有效因子列\n")
             return
@@ -1253,6 +1392,74 @@ def main() -> None:
     except Exception as e:
         print("【融合】跳过: %s\n" % e)
 
+    style_exposure = pd.DataFrame()
+    style_exposure_summary = pd.DataFrame()
+    style_exposure_return = pd.DataFrame()
+    if backtest_meta_by_name and not factor_composite_scores.empty:
+        try:
+            fused_strategy_names = [
+                name for name in backtest_meta_by_name.keys() if str(name).startswith("FUSED_")
+            ]
+            style_exposure = batch_style_exposure(
+                backtest_meta_by_name,
+                factor_composite_scores,
+                strategies=fused_strategy_names,
+            )
+            style_exposure_summary = summarize_style_exposure(style_exposure)
+            style_exposure_return = style_exposure_return_link(style_exposure, nav_curves)
+            if not style_exposure_summary.empty:
+                print("========== 三、风格层暴露与下一期收益关联 ==========\n")
+                for rec in style_exposure_summary.sort_values(
+                    ["strategy", "avg_abs_exposure"],
+                    ascending=[True, False],
+                ).to_dict("records"):
+                    print(
+                        "【风格暴露】%s/%s  avg=%.4f  latest=%.4f  positive_rate=%.2f%%  coverage=%.2f%%"
+                        % (
+                            rec["strategy"],
+                            rec["style"],
+                            rec["avg_exposure"],
+                            rec["latest_exposure"],
+                            rec["positive_rate"] * 100.0,
+                            rec["avg_score_coverage"] * 100.0,
+                        )
+                    )
+                if not style_exposure_return.empty:
+                    print()
+                    for rec in style_exposure_return.sort_values(
+                        ["strategy", "exposure_next_return_corr"],
+                        ascending=[True, False],
+                    ).to_dict("records"):
+                        corr = rec["exposure_next_return_corr"]
+                        print(
+                            "【风格收益关联】%s/%s  corr=%s  pos_next_ret=%.4f  nonpos_next_ret=%s"
+                            % (
+                                rec["strategy"],
+                                rec["style"],
+                                "nan" if pd.isna(corr) else "%.4f" % corr,
+                                rec["avg_next_return_when_positive"]
+                                if not pd.isna(rec["avg_next_return_when_positive"])
+                                else float("nan"),
+                                "nan"
+                                if pd.isna(rec["avg_next_return_when_nonpositive"])
+                                else "%.4f" % rec["avg_next_return_when_nonpositive"],
+                            )
+                        )
+                print()
+            if settings.persist_run_outputs and not style_exposure.empty:
+                paths = save_style_exposure_outputs(
+                    settings,
+                    style_exposure,
+                    style_exposure_summary,
+                    style_exposure_return,
+                )
+                print(
+                    "风格暴露分析已保存: %s\n"
+                    % ", ".join("%s=%s" % (k, v.resolve()) for k, v in paths.items())
+                )
+        except Exception as e:
+            print("【风格暴露】跳过: %s\n" % e)
+
     benchmark_nav: pd.Series | None = None
     if nav_curves:
         try:
@@ -1276,7 +1483,7 @@ def main() -> None:
                             periods=settings.trading_days_per_year,
                         )
                     )
-                print("========== 三、基准与超额收益 ==========\n")
+                print("========== 四、基准与超额收益 ==========\n")
                 print("【基准】%s（股票池每日等权）" % benchmark_nav.name)
                 print(
                     "  年化收益: %.4f  年化波动: %.4f  夏普: %.4f  最大回撤: %.4f"
@@ -1306,7 +1513,7 @@ def main() -> None:
 
     turnover_by_name: dict[str, pd.DataFrame] = {}
     if backtest_meta_by_name:
-        print("========== 四、换手率与交易成本 ==========\n")
+        print("========== 五、换手率与交易成本 ==========\n")
         for name, meta in backtest_meta_by_name.items():
             log = meta.get("rebalance_log") or []
             tf = turnover_frame(log, commission_rate=settings.commission_rate)
@@ -1329,7 +1536,7 @@ def main() -> None:
     concentration_by_name: dict[str, pd.DataFrame] = {}
     concentration_summary_by_name: dict[str, dict] = {}
     if backtest_meta_by_name:
-        print("========== 五、风险暴露与持仓集中度 ==========\n")
+        print("========== 六、风险暴露与持仓集中度 ==========\n")
         for name, meta in backtest_meta_by_name.items():
             log = meta.get("rebalance_log") or []
             cf = concentration_frame(log)

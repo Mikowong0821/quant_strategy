@@ -200,6 +200,7 @@ def calc_cash_profit_quality(finance_df: pd.DataFrame, prices_long: pd.DataFrame
             "ocf_to_opincome",
             "salescash_to_or",
             "ocf_to_or",
+            "q_ocf_to_sales",
             "netprofit_cash_cover",
             "cashflow_to_profit",
         ),

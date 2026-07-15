@@ -153,6 +153,45 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("- 风险因子数量：1", report)
             self.assertIn("| ML_SCORE | DEGRADED | validation_ic_mean_below_threshold |", report)
 
+    def test_report_includes_style_exposure(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["style_exposure"] = pd.DataFrame(
+                [
+                    {
+                        "date": pd.Timestamp("2024-01-31"),
+                        "strategy": "REPORT",
+                        "style": "QUALITY_STYLE",
+                        "weighted_exposure": 0.8,
+                        "abs_weighted_exposure": 0.8,
+                        "score_coverage": 1.0,
+                        "n_positions": 5,
+                        "n_scored_positions": 5,
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 组合风格暴露", report)
+            self.assertIn("- 主导风格：`QUALITY_STYLE`", report)
+            self.assertIn("| 2024-01-31 | QUALITY_STYLE | 0.8000 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

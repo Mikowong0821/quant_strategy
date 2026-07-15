@@ -98,6 +98,24 @@ def fetch_fina_indicator_panel(
     return out.sort_values(["ts_code", "ann_date"]).reset_index(drop=True)
 
 
+def load_fina_indicator_from_csv(path: Union[str, Path]) -> pd.DataFrame:
+    """
+    从本地 CSV 加载 Tushare fina_indicator 缓存。
+
+    统一 `ann_date` 为 datetime，并按 `ts_code/ann_date` 排序。这个缓存用于把财务数据
+    和行情缓存解耦：回测可以复用同一份财务快照，避免每次主流程都现场请求 Tushare。
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(p)
+    df = pd.read_csv(p)
+    if "ann_date" in df.columns:
+        df["ann_date"] = pd.to_datetime(df["ann_date"], errors="coerce")
+    if "ts_code" in df.columns and "ann_date" in df.columns:
+        df = df.sort_values(["ts_code", "ann_date"]).reset_index(drop=True)
+    return df
+
+
 def fetch_daily_panel(
     symbols: List[str],
     start: str,

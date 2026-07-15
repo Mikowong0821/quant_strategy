@@ -24,6 +24,7 @@ class Settings:
     stock_pool_path: Path
     stock_pool_code_col: str = "股票代码"
     tushare_price_cache_path: Path | None = None
+    fina_indicator_cache_path: Path | None = None
     price_col: str = "close"
     commission_rate: float = 0.0003
     rebalance_freq: str = "ME"
@@ -115,6 +116,8 @@ def get_settings() -> Settings:
     stock_pool_path = Path(stock_pool_env).expanduser() if stock_pool_env else data_dir / "stock_pool.xlsx"
     cache_env = os.environ.get("QUANT_TUSHARE_PRICE_CACHE", "").strip()
     tushare_cache = Path(cache_env).expanduser() if cache_env else data_dir / "prices_tushare_cache.csv"
+    fina_cache_env = os.environ.get("QUANT_TUSHARE_FINA_CACHE", "").strip()
+    fina_cache = Path(fina_cache_env).expanduser() if fina_cache_env else None
     start = os.environ.get("QUANT_BACKTEST_START", "").strip() or Settings.backtest_start
     end = os.environ.get("QUANT_BACKTEST_END", "").strip() or Settings.backtest_end
     broker_mode = os.environ.get("QUANT_BROKER_MODE", "").strip() or Settings.broker_mode
@@ -138,6 +141,7 @@ def get_settings() -> Settings:
         output_dir=output_dir,
         stock_pool_path=stock_pool_path,
         tushare_price_cache_path=tushare_cache,
+        fina_indicator_cache_path=fina_cache,
         backtest_start=start,
         backtest_end=end,
         force_final_rebalance=force_final_rebalance,

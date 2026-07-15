@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pandas as pd
@@ -191,6 +193,65 @@ class TestPriceVolumeFactors(unittest.TestCase):
         ):
             self.assertIn(col, panel.columns)
             self.assertGreater(int(panel[col].notna().sum()), 0)
+
+    def test_build_panel_uses_local_fina_indicator_cache(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=20)
+        rows = []
+        for sym in ["AAA", "BBB"]:
+            for i, dt in enumerate(days):
+                rows.append(
+                    {
+                        "trade_date": dt,
+                        "ts_code": sym,
+                        "open": 10.0 + i,
+                        "high": 10.5 + i,
+                        "low": 9.5 + i,
+                        "close": 10.0 + i,
+                        "volume": 100.0 + i,
+                    }
+                )
+        long_df = pd.DataFrame(rows)
+        finance = pd.DataFrame(
+            [
+                {
+                    "ts_code": "AAA",
+                    "ann_date": "2024-01-02",
+                    "eps": 1.0,
+                    "roe": 12.0,
+                    "grossprofit_margin": 40.0,
+                    "netprofit_margin": 15.0,
+                    "debt_to_assets": 30.0,
+                    "or_yoy": 20.0,
+                    "netprofit_yoy": 25.0,
+                    "ocfps": 2.0,
+                    "ocf_to_profit": 120.0,
+                },
+                {
+                    "ts_code": "BBB",
+                    "ann_date": "2024-01-02",
+                    "eps": 2.0,
+                    "roe": 8.0,
+                    "grossprofit_margin": 30.0,
+                    "netprofit_margin": 10.0,
+                    "debt_to_assets": 50.0,
+                    "or_yoy": 5.0,
+                    "netprofit_yoy": 7.0,
+                    "ocfps": 0.5,
+                    "ocf_to_profit": 70.0,
+                },
+            ]
+        )
+
+        with TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "fina_indicator.csv"
+            finance.to_csv(cache_path, index=False)
+            settings = replace(get_settings(), fina_indicator_cache_path=cache_path)
+            with patch("factors.panel_builder.fetch_fina_indicator_panel") as fetch_mock:
+                panel = build_four_factor_panel(long_df, long_df, settings)
+
+        fetch_mock.assert_not_called()
+        self.assertGreater(int(panel["FREE_CASH_FLOW_YIELD"].notna().sum()), 0)
+        self.assertGreater(int(panel["CASH_PROFIT_QUALITY"].notna().sum()), 0)
 
 
 if __name__ == "__main__":

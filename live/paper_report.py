@@ -10,6 +10,7 @@ import pandas as pd
 
 from config import Settings
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
+from live.style_exposure_monitor import summarize_style_exposure_for_report
 
 
 def paper_report_dir(settings: Settings, strategy: str) -> Path:
@@ -164,6 +165,54 @@ def _factor_health_section(factor_monitor: pd.DataFrame | None) -> list[str]:
     return lines
 
 
+def _style_exposure_section(style_exposure: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_style_exposure_for_report(style_exposure)
+    lines = [
+        "## 组合风格暴露",
+        "",
+        "- 主导风格：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if style_exposure is None or style_exposure.empty:
+        lines.extend(
+            [
+                "- 暴露明细：未找到风格暴露表，默认路径为 `output/factor_diagnostics/style_exposure.csv`。",
+                "",
+            ]
+        )
+        return lines
+
+    display = style_exposure.copy()
+    if "date" in display.columns:
+        display["date"] = pd.to_datetime(display["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                [
+                    "date",
+                    "style",
+                    "weighted_exposure",
+                    "score_coverage",
+                    "n_positions",
+                    "n_scored_positions",
+                ],
+                [
+                    "暴露日期",
+                    "风格",
+                    "加权暴露",
+                    "得分覆盖率",
+                    "持仓数",
+                    "有分数持仓数",
+                ],
+                max_rows=20,
+            ),
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -186,6 +235,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     n_skipped = int((trades["fill_status"] == "SKIPPED").sum()) if not trades.empty else 0
     guard_issues = list(result.get("guard_issues", []) or [])
     factor_monitor = result.get("factor_decay_monitor")
+    style_exposure = result.get("style_exposure")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -238,6 +288,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
         lines.extend(["## 较上一快照变化", "", "暂无上一快照。", ""])
 
     lines.extend(_factor_health_section(factor_monitor))
+    lines.extend(_style_exposure_section(style_exposure))
 
     blocked = checks[checks["check_status"] == "BLOCK"] if not checks.empty else checks
     lines.extend(

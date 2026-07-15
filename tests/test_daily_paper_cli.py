@@ -130,6 +130,54 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertIn("## 因子健康与失效监控", report)
             self.assertIn("| ML_SCORE | WATCH | validation_positive_rate_below_threshold |", report)
 
+    def test_run_from_outputs_adds_style_exposure_to_report_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            style_path = settings.output_dir / "factor_diagnostics" / "style_exposure.csv"
+            style_path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "date": "2024-01-31",
+                        "strategy": "TEST",
+                        "style": "PRICE_VOLUME_STYLE",
+                        "weighted_exposure": 1.25,
+                        "abs_weighted_exposure": 1.25,
+                        "score_coverage": 1.0,
+                        "n_positions": 5,
+                        "n_scored_positions": 5,
+                    }
+                ]
+            ).to_csv(style_path, index=False)
+
+            result = run_daily_paper_from_outputs(settings, strategy="TEST")
+            summary = format_daily_paper_summary(result)
+            report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
+            report = report_path.read_text(encoding="utf-8")
+
+            self.assertIn("style_exposure=PRICE_VOLUME_STYLE", summary)
+            self.assertIn("2024-01-31:PRICE_VOLUME_STYLE:1.2500:positive", summary)
+            self.assertIn("## 组合风格暴露", report)
+            self.assertIn("| 2024-01-31 | PRICE_VOLUME_STYLE | 1.2500 |", report)
+
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(

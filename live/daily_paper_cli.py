@@ -33,6 +33,11 @@ from live.manual_confirmation import (
 )
 from live.paper_runner import run_daily_paper_trade
 from live.paper_report import save_daily_paper_report
+from live.style_exposure_monitor import (
+    latest_style_exposure_for_strategy,
+    load_style_exposure,
+    summarize_style_exposure_for_report,
+)
 
 
 DEFAULT_STRATEGY = "FUSED_ROLLING_SCORE_WEIGHTED"
@@ -165,6 +170,7 @@ def run_daily_paper_from_outputs(
     execution_mode: str = "paper_trading",
     generate_manual_confirmation: bool = True,
     factor_decay_monitor_path: Path | None = None,
+    style_exposure_path: Path | None = None,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -232,6 +238,12 @@ def run_daily_paper_from_outputs(
     result["guard_issues"] = guard_issues
     factor_monitor = load_factor_decay_monitor(settings, factor_decay_monitor_path)
     result["factor_decay_monitor"] = factor_monitor
+    style_exposure_all = load_style_exposure(settings, style_exposure_path)
+    result["style_exposure"] = latest_style_exposure_for_strategy(
+        style_exposure_all,
+        strategy=strategy,
+        trade_date=run_date,
+    )
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
         result.setdefault("paths", {})["paper_report"] = report_path
@@ -254,6 +266,7 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     paths = result.get("paths", {})
     guard_issues = result.get("guard_issues", [])
     factor_monitor = result.get("factor_decay_monitor")
+    style_exposure = result.get("style_exposure")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -300,6 +313,8 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
         lines.append("factor_health=%s risky_factors=%d reason=%s" % (factor_status, risky_count, factor_reasons))
     else:
         lines.append("factor_health=%s reason=%s" % (factor_status, factor_reasons))
+    style_status, style_reason = summarize_style_exposure_for_report(style_exposure)
+    lines.append("style_exposure=%s detail=%s" % (style_status, style_reason))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))
@@ -321,6 +336,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="因子失效监控 CSV；默认 output/factor_validation/factor_decay_monitor.csv",
+    )
+    parser.add_argument(
+        "--style-exposure",
+        type=Path,
+        default=None,
+        help="风格暴露 CSV；默认 output/factor_diagnostics/style_exposure.csv",
     )
     parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
     parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
@@ -356,6 +377,7 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             execution_mode=args.execution_mode,
             generate_manual_confirmation=not args.no_manual_confirm,
             factor_decay_monitor_path=args.factor_decay_monitor,
+            style_exposure_path=args.style_exposure,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
         print(str(exc), file=sys.stderr)

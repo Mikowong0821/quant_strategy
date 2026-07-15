@@ -493,8 +493,14 @@ def save_factor_diagnostics(
     factor_weight_summary: pd.DataFrame | None = None,
     factor_weight_train_summary: pd.DataFrame | None = None,
     rolling_factor_weight_log: pd.DataFrame | None = None,
+    factor_selection_summary: pd.DataFrame | None = None,
+    factor_composite_components: pd.DataFrame | None = None,
+    factor_composite_scores: pd.DataFrame | None = None,
+    factor_correlation_matrix: pd.DataFrame | None = None,
+    factor_correlation_days: pd.DataFrame | None = None,
+    factor_redundancy_report: pd.DataFrame | None = None,
 ) -> Dict[str, Path]:
-    """保存因子诊断表：Top-K 多头超额、分组收益、综合评分、训练段权重与滚动权重日志。"""
+    """保存因子诊断表：多头超额、分组收益、权重、准入、复合因子与冗余报告。"""
     base = settings.output_dir / "factor_diagnostics"
     base.mkdir(parents=True, exist_ok=True)
     out: Dict[str, Path] = {}
@@ -528,4 +534,60 @@ def save_factor_diagnostics(
         rolling_factor_weight_log.to_csv(rolling_path, index=False, date_format="%Y-%m-%d")
         out["rolling_factor_weight_log"] = rolling_path
 
+    if factor_selection_summary is not None:
+        selection_path = base / "factor_selection_summary.csv"
+        factor_selection_summary.to_csv(selection_path, index=False)
+        out["factor_selection_summary"] = selection_path
+
+    if factor_composite_components is not None:
+        components_path = base / "factor_composite_components.csv"
+        factor_composite_components.to_csv(components_path, index=False)
+        out["factor_composite_components"] = components_path
+
+    if factor_composite_scores is not None:
+        scores_path = base / "factor_composite_scores.csv"
+        scores = factor_composite_scores.reset_index()
+        scores.to_csv(scores_path, index=False, date_format="%Y-%m-%d")
+        out["factor_composite_scores"] = scores_path
+
+    if factor_correlation_matrix is not None:
+        corr_path = base / "factor_correlation_matrix.csv"
+        factor_correlation_matrix.to_csv(corr_path)
+        out["factor_correlation_matrix"] = corr_path
+
+    if factor_correlation_days is not None:
+        days_path = base / "factor_correlation_days.csv"
+        factor_correlation_days.to_csv(days_path)
+        out["factor_correlation_days"] = days_path
+
+    if factor_redundancy_report is not None:
+        redundancy_path = base / "factor_redundancy_report.csv"
+        factor_redundancy_report.to_csv(redundancy_path, index=False)
+        out["factor_redundancy_report"] = redundancy_path
+
+    return out
+
+
+def save_style_exposure_outputs(
+    settings: Settings,
+    style_exposure: pd.DataFrame,
+    style_exposure_summary: pd.DataFrame,
+    style_exposure_return_link: pd.DataFrame,
+) -> Dict[str, Path]:
+    """保存风格层暴露、暴露汇总与暴露-下一期收益关联表。"""
+    base = settings.output_dir / "factor_diagnostics"
+    base.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Path] = {}
+
+    exposure_path = base / "style_exposure.csv"
+    style_exposure.to_csv(exposure_path, index=False, date_format="%Y-%m-%d")
+    out["style_exposure"] = exposure_path
+
+    summary_path = base / "style_exposure_summary.csv"
+    style_exposure_summary.to_csv(summary_path, index=False)
+    out["style_exposure_summary"] = summary_path
+
+    link_path = base / "style_exposure_return_link.csv"
+    style_exposure_return_link.to_csv(link_path, index=False)
+    out["style_exposure_return_link"] = link_path
     return out

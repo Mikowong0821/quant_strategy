@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from backtest.backtest_utils import long_to_wide, prices_to_wide_close, to_returns, wide_to_long
@@ -23,7 +25,7 @@ from factors.factor_reversal import calc_reversal
 from factors.factor_roe import calc_roe
 from factors.factor_volume import calc_volume_ratio
 from factors.factor_volatility import calc_volatility
-from live.data_feed import fetch_fina_indicator_panel
+from live.data_feed import fetch_fina_indicator_panel, load_fina_indicator_from_csv
 
 DEFAULT_FACTOR_ORDER = [
     "MOMENTUM",
@@ -129,13 +131,18 @@ def build_four_factor_panel(
     volume_ratio = _align_factor(volume_ratio, idx)
 
     try:
-        fina = fetch_fina_indicator_panel(
-            list(prices_wide.columns),
-            settings.backtest_start,
-            settings.backtest_end,
-            history_years=settings.fina_history_years,
-        )
-    except Exception:
+        fina_cache = getattr(settings, "fina_indicator_cache_path", None)
+        if fina_cache is not None and Path(fina_cache).expanduser().is_file():
+            fina = load_fina_indicator_from_csv(fina_cache)
+        else:
+            fina = fetch_fina_indicator_panel(
+                list(prices_wide.columns),
+                settings.backtest_start,
+                settings.backtest_end,
+                history_years=settings.fina_history_years,
+            )
+    except Exception as exc:
+        print("财务指标加载失败，财务因子将为空:", exc)
         fina = pd.DataFrame()
     if fina.empty:
         pe = pd.Series(index=idx, dtype=float)
