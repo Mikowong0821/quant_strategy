@@ -6,7 +6,9 @@ import pandas as pd
 from analysis.factor_validation import (
     build_factor_decay_monitor,
     build_out_of_sample_validation,
+    build_rolling_out_of_sample_validation,
     split_train_validation_dates,
+    summarize_rolling_out_of_sample_validation,
 )
 from config import get_settings
 
@@ -54,6 +56,33 @@ class FactorValidationTests(unittest.TestCase):
         self.assertEqual(set(monitor["factor"]), {"GOOD", "WEAK"})
         weak_status = str(monitor[monitor["factor"] == "WEAK"]["status"].iloc[0])
         self.assertIn(weak_status, {"WATCH", "DEGRADED", "FAILED"})
+
+    def test_build_rolling_out_of_sample_validation_and_summary(self):
+        settings = replace(
+            get_settings(),
+            rebalance_freq="D",
+            top_k=1,
+            rolling_oos_train_days=30,
+            rolling_oos_validation_days=10,
+            rolling_oos_step_days=10,
+            rolling_oos_min_validation_days=8,
+        )
+        rolling = build_rolling_out_of_sample_validation(
+            self.panel,
+            self.prices,
+            settings,
+            factors=["GOOD", "WEAK"],
+        )
+        self.assertGreaterEqual(int(rolling["window_id"].nunique()), 4)
+        self.assertEqual(set(rolling["factor"]), {"GOOD", "WEAK"})
+        self.assertIn("validation_excess_ann_return", rolling.columns)
+
+        summary = summarize_rolling_out_of_sample_validation(rolling)
+        self.assertEqual(set(summary["factor"]), {"GOOD", "WEAK"})
+        good = summary[summary["factor"] == "GOOD"].iloc[0]
+        weak = summary[summary["factor"] == "WEAK"].iloc[0]
+        self.assertGreater(float(good["excess_positive_window_rate"]), 0.5)
+        self.assertLess(float(weak["excess_positive_window_rate"]), 0.5)
 
 
 if __name__ == "__main__":

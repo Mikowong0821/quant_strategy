@@ -38,6 +38,11 @@ from analysis.factor_redundancy import (
     prune_redundant_factors,
 )
 from analysis.factor_selection import build_factor_selection_table, selected_factors_for_fusion
+from analysis.factor_weight_stability import (
+    factor_weight_drift_events,
+    factor_weight_portfolio_drift,
+    factor_weight_stability_summary,
+)
 from analysis.style_exposure import (
     batch_style_exposure,
     style_exposure_return_link,
@@ -46,7 +51,9 @@ from analysis.style_exposure import (
 from analysis.factor_validation import (
     build_factor_decay_monitor,
     build_out_of_sample_validation,
+    build_rolling_out_of_sample_validation,
     save_factor_validation_outputs,
+    summarize_rolling_out_of_sample_validation,
 )
 from analysis.ic import (
     daily_ic_spearman,
@@ -926,6 +933,9 @@ def main() -> None:
     factor_weight_summary = pd.DataFrame()
     factor_weight_train_summary = pd.DataFrame()
     rolling_factor_weight_log = pd.DataFrame()
+    factor_weight_stability = pd.DataFrame()
+    factor_weight_drift = pd.DataFrame()
+    factor_weight_portfolio_drift_frame = pd.DataFrame()
     factor_selection_summary = pd.DataFrame()
     factor_composite_components = pd.DataFrame()
     factor_composite_scores = pd.DataFrame()
@@ -934,6 +944,8 @@ def main() -> None:
     factor_redundancy_report = pd.DataFrame()
     out_of_sample_validation = pd.DataFrame()
     factor_decay_monitor = pd.DataFrame()
+    rolling_out_of_sample_validation = pd.DataFrame()
+    rolling_out_of_sample_summary = pd.DataFrame()
     score_weighted_weights_by_factor: dict[str, float] = {}
     score_weighted_meta: dict[str, object] = {}
     fused_rolling_score_weighted = pd.Series(dtype=float)
@@ -1043,6 +1055,15 @@ def main() -> None:
             train_ratio=settings.factor_weight_train_ratio,
         )
         factor_decay_monitor = build_factor_decay_monitor(out_of_sample_validation)
+        rolling_out_of_sample_validation = build_rolling_out_of_sample_validation(
+            research_panel[factor_order].dropna(axis=1, how="all"),
+            prices,
+            settings,
+            factors=factor_order,
+        )
+        rolling_out_of_sample_summary = summarize_rolling_out_of_sample_validation(
+            rolling_out_of_sample_validation
+        )
         if out_of_sample_validation.empty:
             print("【样本外】跳过: 无有效验证结果\n")
         else:
@@ -1061,6 +1082,30 @@ def main() -> None:
                         rec["validation_excess_ann_return"],
                         rec["validation_top_minus_bottom_ann"],
                         rec["reasons"] or "-",
+                    )
+                )
+            print()
+        if not rolling_out_of_sample_summary.empty:
+            n_windows = int(rolling_out_of_sample_validation["window_id"].nunique())
+            print(
+                "【滚动样本外】windows=%d；train_days=%d；validation_days=%d；step_days=%d"
+                % (
+                    n_windows,
+                    int(settings.rolling_oos_train_days),
+                    int(settings.rolling_oos_validation_days),
+                    int(settings.rolling_oos_step_days),
+                )
+            )
+            for rec in rolling_out_of_sample_summary.head(8).to_dict("records"):
+                print(
+                    "【滚动样本外】%s  status=%s  stable=%.2f%%  valIC=%.4f  valExcess=%.4f  topBottom=%.4f"
+                    % (
+                        rec["factor"],
+                        rec["status"],
+                        float(rec["stable_window_rate"]) * 100.0,
+                        float(rec["avg_validation_ic_mean"]),
+                        float(rec["avg_validation_excess_ann_return"]),
+                        float(rec["avg_validation_top_minus_bottom_ann"]),
                     )
                 )
             print()
@@ -1238,6 +1283,63 @@ def main() -> None:
     except Exception as e:
         print("【滚动综合权重】跳过: %s\n" % e)
 
+    print("========== 因子权重稳定性与漂移监控 ==========\n")
+    try:
+        factor_weight_stability = factor_weight_stability_summary(rolling_factor_weight_log)
+        factor_weight_drift = factor_weight_drift_events(rolling_factor_weight_log)
+        factor_weight_portfolio_drift_frame = factor_weight_portfolio_drift(rolling_factor_weight_log)
+        if factor_weight_stability.empty:
+            print("【权重漂移】跳过: 无滚动权重日志\n")
+        else:
+            watch = factor_weight_stability[factor_weight_stability["status"] != "PASS"]
+            latest_port = (
+                factor_weight_portfolio_drift_frame.sort_values("date").tail(1)
+                if not factor_weight_portfolio_drift_frame.empty
+                else pd.DataFrame()
+            )
+            for rec in factor_weight_stability.to_dict("records"):
+                print(
+                    "【权重稳定】%s  latest=%.2f%%  avg_change=%.2f%%  max_change=%.2f%%  status=%s"
+                    % (
+                        rec["factor"],
+                        float(rec["latest_weight"]) * 100.0,
+                        float(rec["avg_abs_change"]) * 100.0,
+                        float(rec["max_abs_change"]) * 100.0,
+                        rec["status"],
+                    )
+                )
+            if not latest_port.empty:
+                rec = latest_port.iloc[0].to_dict()
+                print(
+                    "【组合权重漂移】最近一期=%s  dominant=%s %.2f%%  effective_factor_n=%.2f  weight_turnover=%.2f%%"
+                    % (
+                        pd.Timestamp(rec["date"]).strftime("%Y-%m-%d"),
+                        rec["dominant_factor"],
+                        float(rec["dominant_weight"]) * 100.0,
+                        float(rec["effective_factor_n"]),
+                        float(rec["weight_turnover"]) * 100.0,
+                    )
+                )
+            if not factor_weight_drift.empty:
+                latest_events = factor_weight_drift.sort_values("date").tail(5)
+                print("【权重漂移事件】最近事件:")
+                for rec in latest_events.to_dict("records"):
+                    print(
+                        "  %s  %s  %s  change=%.2f%%  severity=%s"
+                        % (
+                            pd.Timestamp(rec["date"]).strftime("%Y-%m-%d"),
+                            rec["factor"],
+                            rec["event_type"],
+                            float(rec["weight_change"]) * 100.0,
+                            rec["severity"],
+                        )
+                    )
+            elif watch.empty:
+                print("【权重漂移事件】未发现超过阈值的权重跳变")
+            print()
+    except Exception as e:
+        print("【权重漂移】跳过: %s\n" % e)
+
     if settings.persist_run_outputs and (
         not long_excess_summary.empty
         or not group_return_detail.empty
@@ -1245,6 +1347,9 @@ def main() -> None:
         or not factor_weight_summary.empty
         or not factor_weight_train_summary.empty
         or not rolling_factor_weight_log.empty
+        or not factor_weight_stability.empty
+        or not factor_weight_drift.empty
+        or not factor_weight_portfolio_drift_frame.empty
         or not factor_selection_summary.empty
         or not factor_composite_components.empty
         or not factor_composite_scores.empty
@@ -1252,6 +1357,8 @@ def main() -> None:
         or not factor_redundancy_report.empty
         or not out_of_sample_validation.empty
         or not factor_decay_monitor.empty
+        or not rolling_out_of_sample_validation.empty
+        or not rolling_out_of_sample_summary.empty
     ):
         try:
             diag_paths = save_factor_diagnostics(
@@ -1268,16 +1375,26 @@ def main() -> None:
                 factor_correlation_matrix=factor_correlation_matrix,
                 factor_correlation_days=factor_correlation_days,
                 factor_redundancy_report=factor_redundancy_report,
+                factor_weight_stability_summary=factor_weight_stability,
+                factor_weight_drift_events=factor_weight_drift,
+                factor_weight_portfolio_drift=factor_weight_portfolio_drift_frame,
             )
             print(
                 "因子诊断已保存: %s"
                 % ", ".join("%s=%s" % (k, v.resolve()) for k, v in diag_paths.items())
             )
-            if not out_of_sample_validation.empty or not factor_decay_monitor.empty:
+            if (
+                not out_of_sample_validation.empty
+                or not factor_decay_monitor.empty
+                or not rolling_out_of_sample_validation.empty
+                or not rolling_out_of_sample_summary.empty
+            ):
                 validation_paths = save_factor_validation_outputs(
                     settings,
                     out_of_sample_validation,
                     factor_decay_monitor,
+                    rolling_validation=rolling_out_of_sample_validation,
+                    rolling_summary=rolling_out_of_sample_summary,
                 )
                 print(
                     "样本外验证已保存: %s"

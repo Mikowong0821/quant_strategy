@@ -7,7 +7,7 @@
 
 ## 1. 项目定位与当前成熟度
 
-**定位**：A 股日频、研究向的 **「数据 → 因子面板 → 因子清洗与行业内标准化 → 数据质量 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议与滚动权重 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 单因子/融合回测 → 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与净值图 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
+**定位**：A 股日频、研究向的 **「数据 → 因子面板 → 因子清洗与行业内标准化 → 数据质量 → IC 与稳定性诊断 → 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议与滚动权重 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 单因子/融合回测 → 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与净值图 → 多股票池横向验证 → 参数敏感性分析 → 可选落盘」** 闭环；目录上预留 **实盘信号 / 模拟盘** 等扩展位。
 
 **MVP 定稿**：上述闭环 **已实现并可作为交付边界**；`live.stock_pool` 与 `scripts/build_live_universe.py` 已可把人工股票池过滤成实盘目标池确认文件；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.broker_factory`、`live.broker_reconcile`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.style_exposure_monitor`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_execution_feedback.py` 已补充为准实盘准备层，可把目标权重转换成订单计划、做基础可执行性检查、用虚拟账户或模拟券商验证成交协议、按配置创建模拟或只读券商 Adapter、保存纸面账户状态、生成带因子健康状态和风格暴露的 Markdown 日报和小资金人工确认单，回填真实成交并分析执行偏差，在日终运行前后检查异常，保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易可通过 `--execution-mode simulated_broker` 走统一券商接口；`RealBrokerReadOnlyAdapter` 已提供真实券商只读接入骨架；`broker_reconcile` 可对比纸面账户与只读真实账户差异；**不包含** 真实券商交易 adapter、实时行情订阅、以及 `fuse_models` 中除 `mean_zscore` / `mean` 以外的方法。`main` 未调用 `run_multi_backtest(factors, weights)` 的线性加权路径，属产品取舍而非 MVP 缺口。**融合得分默认**由 **各因子日 IC 的滞后滚动均值** 做 z-score 列权（`fuse_ic_weighted_zscore`，可配置关闭回等权）；IC **不**写入股票层 `maximize_sharpe` / `risk_parity` 的 μ、Σ。
 
@@ -20,8 +20,10 @@
 - 回测：**月末再平衡（`ME`）**、**Top-K 多头**、**收盘价成交**、**单边手续费**；若配置 `min_avg_volume` / `min_avg_amount`，Top-K 前会按过去窗口平均成交量 / 成交额做可交易性过滤。持仓在 Top-K 内为 **`portfolio_weighting`**：`equal`（1/K）、**`max_sharpe`**（历史日收益估 μ、Σ 后 `maximize_sharpe`，失败等权）或 **`risk_parity`**（同窗口估 Σ 后 `risk_parity`，样本不足等失败等权）。目标权重生成后会经过 `max_position_weight` 单票上限、`max_industry_weight` 行业权重上限、`target_volatility` 波动率目标、`min_positions` 最小持仓数量、`max_rebalance_turnover` 单次换手上限，以及可选的 `enable_trade_status_filter` 停牌 / 涨跌停交易约束。每期 `meta["rebalance_log"]` 记录选股、可交易性过滤前后候选数、行业暴露、目标波动缩放、最小持仓检查、现金目标仓位、约束后权重与节流信息；`meta["decision_log"]` 逐股票记录入选、过滤、所属行业、波动率缩放、最小持仓缩放、买卖、交易阻断和节流原因。
 - **IC 与稳定性诊断**：`analysis.ic` 日截面 Spearman vs 前瞻收益；不参与调仓；可落盘 `output/cache/ic_*.csv`。同时输出 IC 分布分位数、正负占比、极端值和滚动稳定性到 `output/ic_diagnostics/`。
 - **因子诊断**：`analysis.factor_diagnostics` 对每个因子构造 Top-K 等权多头腿，计算相对股票池等权基准的 `excess_ann_return`、`tracking_error`、`information_ratio`；同时按 `Settings.factor_group_count` 做分组收益，输出 Top-Bottom 与 `monotonicity_score`，用于回答“高分组有没有主动收益”和“全排序是否有收益层次”。`ML_SCORE` 与其他因子使用同一套诊断口径，不能因为来自机器学习模型就跳过验证。
-- **多因子权重建议**：`models.factor_weighting` 综合 IC 分布、rolling IC、Top-Bottom 与单调性，输出 `factor_score` 和 `fusion_weight`；全样本表用于诊断审计，训练段表会作为 `FUSED_SCORE_WEIGHTED` 的静态权重来源，调仓日前历史窗口会生成 `rolling_factor_weight_log.csv`。
-- **样本外验证与因子失效监控**：`analysis.factor_validation` 复用 IC、多头超额和分组收益口径，把历史日期按 `factor_weight_train_ratio` 切成训练段 / 验证段，比较 `ic_mean`、正 IC 占比、多头超额、Top-Bottom 和单调性，并输出 `OK/WATCH/DEGRADED/FAILED` 状态。
+- **多因子权重建议**：`models.factor_weighting` 综合 IC 分布、rolling IC、Top-Bottom 与单调性，输出 `factor_score` 和 `fusion_weight`；全样本表用于诊断审计，训练段表会作为 `FUSED_SCORE_WEIGHTED` 的静态权重来源，调仓日前历史窗口会生成 `rolling_factor_weight_log.csv`；`analysis.factor_weight_stability` 进一步监控滚动权重稳定性、漂移事件和组合层主导因子。
+- **样本外验证与因子失效监控**：`analysis.factor_validation` 复用 IC、多头超额和分组收益口径，把历史日期按 `factor_weight_train_ratio` 切成训练段 / 验证段，比较 `ic_mean`、正 IC 占比、多头超额、Top-Bottom 和单调性，并输出 `OK/WATCH/DEGRADED/FAILED` 状态；滚动样本外验证再用多个训练 / 验证窗口输出 `ROBUST/WATCH/UNSTABLE`，观察因子跨时间窗口是否稳定。
+- **多股票池横向验证**：`analysis.multi_universe_validation` 读取多个已经完成的回测输出目录，汇总 `performance_summary.csv` 与 `factor_diagnostics/long_excess_summary.csv`，比较同一策略和同一因子在不同股票池上的年化收益、超额收益、信息比率和稳健性状态。它不替代单次回测，而是回答“这个结果是不是只在某一个股票池里成立”。
+- **参数敏感性分析**：`analysis.parameter_sensitivity` 复用已有价格宽表和标准化因子面板，在 baseline 附近一次只改一个参数，重新跑轻量回测并汇总收益、超额、回撤、换手和集中度。它不用于挑最优参数，而是判断策略是否过度依赖某个精确参数。
 - **因子入选与剔除机制**：`analysis.factor_selection` 汇总覆盖率、综合评分和样本外失效监控，把因子标记为 `PASS/WATCH/REJECT`；主融合候选池优先使用 `PASS`，无 `PASS` 时回退 `WATCH`，单因子回测仍保留所有因子。
 - **因子相关性与冗余分析**：`analysis.factor_redundancy` 按每日股票横截面计算因子相关性均值，输出相关矩阵和冗余报告；主融合候选池会优先保留准入状态更好、`factor_score` 更高的因子，避免重复信号同时进入主策略。
 - **因子分层与复合因子体系**：`analysis.factor_composite` 将准入并去冗余后的原始因子按量价、估值、质量、成长、现金流、ML 等风格层合成 `*_STYLE` 复合分数。主融合优先使用风格层；若复合层为空，回退去冗余后的原始候选池。
@@ -51,9 +53,11 @@
 - `live/cache_io.save_data_quality_reports`：写 **`output/data_quality/*.csv`**，保存价格 / 因子 / 调仓日覆盖率报告。
 - `analysis.ic.save_ic_series`：在 IC 计算完成且 `persist_run_outputs` 时写 **`ic_<因子名>.csv`**。
 - `analysis.ic.save_ic_diagnostics`：写 **`output/ic_diagnostics/ic_distribution_summary.csv`** 与 **`ic_rolling_stability.csv`**，保存 IC 分布和滚动稳定性。
-- `live/cache_io.save_factor_diagnostics`：写 **`output/factor_diagnostics/long_excess_summary.csv`**、**`group_return_detail.csv`**、**`group_return_summary.csv`**、**`factor_weight_summary.csv`**、**`factor_weight_train_summary.csv`**、**`rolling_factor_weight_log.csv`**，保存每个因子的 Top-K 多头超额、分组收益、单调性、全样本权重诊断、训练段静态融合权重与调仓日前滚动权重。
+- `live/cache_io.save_factor_diagnostics`：写 **`output/factor_diagnostics/long_excess_summary.csv`**、**`group_return_detail.csv`**、**`group_return_summary.csv`**、**`factor_weight_summary.csv`**、**`factor_weight_train_summary.csv`**、**`rolling_factor_weight_log.csv`**、**`factor_weight_stability_summary.csv`**、**`factor_weight_drift_events.csv`**、**`factor_weight_portfolio_drift.csv`**，保存每个因子的 Top-K 多头超额、分组收益、单调性、全样本权重诊断、训练段静态融合权重、调仓日前滚动权重，以及滚动权重稳定性和漂移事件。
 - `live/cache_io.save_style_exposure_outputs`：写 **`output/factor_diagnostics/style_exposure.csv`**、**`style_exposure_summary.csv`** 与 **`style_exposure_return_link.csv`**，保存融合策略逐期风格暴露、暴露汇总和暴露-下一期收益关联。
-- `analysis.factor_validation.save_factor_validation_outputs`：写 **`output/factor_validation/out_of_sample_validation.csv`** 与 **`factor_decay_monitor.csv`**，保存训练段 / 验证段因子评价对照和失效监控状态。
+- `analysis.factor_validation.save_factor_validation_outputs`：写 **`output/factor_validation/out_of_sample_validation.csv`**、**`factor_decay_monitor.csv`**、**`rolling_out_of_sample_validation.csv`** 与 **`rolling_out_of_sample_summary.csv`**，保存训练段 / 验证段因子评价对照、失效监控状态和滚动样本外稳定性。
+- `analysis.multi_universe_validation.save_multi_universe_validation_outputs`：写 **`output/multi_universe_validation/strategy_universe_performance.csv`**、**`strategy_universe_robustness.csv`**、**`factor_universe_performance.csv`** 与 **`factor_universe_robustness.csv`**，保存跨股票池的策略绩效和因子多头超额稳健性。
+- `analysis.parameter_sensitivity.save_parameter_sensitivity_outputs`：写 **`output/parameter_sensitivity/parameter_sensitivity_detail.csv`** 与 **`parameter_sensitivity_summary.csv`**，保存参数扰动后的逐变体绩效和按参数汇总的稳健性状态。
 - `live/cache_io.save_run_config`：写 **`output/cache/run_config.json`**，保存本次 `Settings` 配置快照。
 - `live/cache_io.save_performance_summary`：写 **`output/performance_summary.csv`**，汇总每条策略的年化收益、波动、夏普、最大回撤，并包含相对基准、换手率、预估成本与集中度指标。
 - `live/cache_io.save_rebalance_logs`：写 **`output/rebalance_logs/<策略名>.csv`**，记录每次调仓的日期、标的、权重、配权方式、排序、流动性过滤前后候选数、行业上限是否触发、最大行业暴露、目标波动、缩放比例、最小持仓检查、现金目标仓位与阈值。
@@ -101,6 +105,8 @@
 | `scripts/build_live_universe.py` | 实盘目标池确认入口：从股票池、价格缓存和可选交易状态生成 `stock_pool_filter_report_<date>.csv` 与 `active_universe_<date>.csv`。 |
 | `scripts/run_scheduled_daily_paper.py` | 调度命令行入口：调用 `live.paper_scheduler.run_scheduled_daily_paper`，透传日终纸面交易参数并写 `output/scheduler_logs/<date>.log`。 |
 | `scripts/build_execution_feedback.py` | 真实成交回填入口：读取人工确认单 CSV，生成 `output/execution_feedback/<strategy>/` 下的逐笔偏差、汇总和 Markdown 报告。 |
+| `scripts/build_multi_universe_validation.py` | 多股票池验证入口：读取多个已完成回测输出目录，生成策略和因子在不同股票池上的表现明细与稳健性汇总。 |
+| `scripts/build_parameter_sensitivity.py` | 参数敏感性入口：读取已有价格缓存和因子面板，对代表信号做一维参数扰动并输出明细与汇总。 |
 | `backtest/backtest_utils.py` | `to_returns`、`long_to_wide`、`wide_to_long`、`prices_to_wide_close`、`align_panel`。 |
 | `backtest/backtest_single.py` | `run_single_backtest`：再平衡日可交易性过滤、Top-K、**等权 / 夏普 / 风险平价**、单票权重上限、行业权重上限、波动率目标与现金仓位、最小持仓数量、单次换手上限、停牌 / 涨跌停交易约束、撮合与净值；`meta` 含 `rebalance_log`、`decision_log`、`portfolio_weighting`、`max_position_weight`、`max_industry_weight`、`target_volatility`、`min_positions`、`max_rebalance_turnover`。 |
 | `backtest/backtest_multi.py` | `run_multi_backtest`：`fused=` 或 `factors`+`weights` 合成一列后转调 `run_single_backtest`。 |
@@ -110,7 +116,10 @@
 | `analysis/performance.py` | `summarize(nav)`。 |
 | `analysis/benchmark.py` | `equal_weight_benchmark_nav`、`summarize_excess`、`excess_nav_frame`。 |
 | `analysis/factor_diagnostics.py` | `factor_long_only_nav`、`factor_long_excess_summary`、`batch_factor_long_excess`、`factor_group_return_detail`、`summarize_group_returns`、`batch_factor_group_returns`：因子 Top-K 多头腿、分组收益与单调性诊断。 |
-| `analysis/factor_validation.py` | `build_out_of_sample_validation`、`build_factor_decay_monitor`、`save_factor_validation_outputs`：训练段 / 验证段因子评价对照、失效状态判断和 CSV 落盘。 |
+| `analysis/factor_weight_stability.py` | `factor_weight_stability_summary`、`factor_weight_drift_events`、`factor_weight_portfolio_drift`：基于 `rolling_factor_weight_log.csv` 监控滚动因子权重是否稳定、是否跳变、是否被单一因子主导。 |
+| `analysis/factor_validation.py` | `build_out_of_sample_validation`、`build_factor_decay_monitor`、`build_rolling_out_of_sample_validation`、`summarize_rolling_out_of_sample_validation`、`save_factor_validation_outputs`：训练段 / 验证段因子评价对照、失效状态判断、滚动样本外稳定性和 CSV 落盘。 |
+| `analysis/multi_universe_validation.py` | `collect_strategy_universe_performance`、`summarize_strategy_universe_robustness`、`collect_factor_universe_performance`、`summarize_factor_universe_robustness`：读取多个 output 目录，评估策略和因子是否跨股票池稳定。 |
+| `analysis/parameter_sensitivity.py` | `build_one_way_parameter_variants`、`run_parameter_sensitivity`、`summarize_parameter_sensitivity`、`save_parameter_sensitivity_outputs`：在同一份数据和同一信号上扰动参数，观察绩效是否稳定。 |
 | `analysis/factor_selection.py` | `build_factor_selection_table`、`selected_factors_for_fusion`：汇总覆盖率、综合评分和失效监控，生成 `PASS/WATCH/REJECT` 准入表，并为主融合选择候选因子池。 |
 | `analysis/factor_redundancy.py` | `factor_cross_sectional_correlation`、`build_factor_redundancy_report`、`prune_redundant_factors`：计算每日横截面相关性、识别高相关因子对，并从主融合候选池中剔除冗余因子。 |
 | `analysis/factor_composite.py` | `build_factor_composite_scores`：将准入并去冗余后的原始因子按风格层合成为 `PRICE_VOLUME_STYLE`、`QUALITY_STYLE` 等复合因子，并输出构成表。 |
@@ -171,7 +180,10 @@
 | 8 | IC 分布与稳定性诊断 | `ic_distribution_summary`、`ic_rolling_stability` → `ic_distribution_summary.csv`、`ic_rolling_stability.csv` |
 | 9 | 因子诊断 | `batch_factor_long_excess`、`batch_factor_group_returns` → `long_excess_summary.csv`、`group_return_detail.csv`、`group_return_summary.csv` |
 | 10 | 多因子权重建议 | `build_factor_weight_summary` → `factor_weight_summary.csv` / `factor_weight_train_summary.csv` / `rolling_factor_weight_log.csv` |
-| 11 | 样本外验证与因子失效监控 | `build_out_of_sample_validation`、`build_factor_decay_monitor` → `output/factor_validation/*.csv` |
+| 10A | 因子权重稳定性 | `analysis.factor_weight_stability` → `factor_weight_stability_summary.csv` / `factor_weight_drift_events.csv` / `factor_weight_portfolio_drift.csv` |
+| 11 | 样本外验证与因子失效监控 | `build_out_of_sample_validation`、`build_factor_decay_monitor`、`build_rolling_out_of_sample_validation`、`summarize_rolling_out_of_sample_validation` → `output/factor_validation/*.csv` |
+| 11A | 多股票池横向验证 | `scripts/build_multi_universe_validation.py` / `analysis.multi_universe_validation` → `output/multi_universe_validation/*.csv` |
+| 11B | 参数敏感性分析 | `scripts/build_parameter_sensitivity.py` / `analysis.parameter_sensitivity` → `output/parameter_sensitivity/*.csv` |
 | 12 | 因子入选与剔除 | `build_factor_selection_table`、`selected_factors_for_fusion` → `factor_selection_summary.csv`；主融合优先使用 `PASS`，无 `PASS` 时回退 `WATCH` |
 | 13 | 因子相关性与冗余分析 | `factor_cross_sectional_correlation`、`build_factor_redundancy_report`、`prune_redundant_factors` → `factor_correlation_matrix.csv` / `factor_redundancy_report.csv` |
 | 14 | 因子分层与复合因子 | `build_factor_composite_scores` → `factor_composite_scores.csv` / `factor_composite_components.csv`；主融合优先使用复合风格层 |
@@ -182,7 +194,7 @@
 | 19 | 基准与超额收益 | `equal_weight_benchmark_nav`、`summarize_excess` |
 | 20 | 换手与成本 | `turnover_frame`、`summarize_turnover` |
 | 21 | 风险暴露与集中度 | `concentration_frame`、`summarize_concentration` |
-| 22 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` |
+| 22 | 实验记录落盘 | `run_config.json`、`performance_summary.csv`、`ic_diagnostics/*.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`multi_universe_validation/*.csv`、`parameter_sensitivity/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` |
 | 23 | 净值、超额净值、覆盖率、换手与集中度图 | `plot_nav` / `plot_factor_coverage` / `plot_turnover` / `plot_effective_n` |
 
 **多因子关系**：多条单因子回测为 **同一 `panel` 的不同原始因子列** 的独立策略；融合回测优先使用准入 + 去冗余后形成的复合风格层，再通过 **IC 列权、训练段静态权重或调仓日前滚动权重** 得到综合得分，经 `run_multi_backtest` 形成独立策略。调仓日 **不会**临时拼接字段再跑一条，融合得分会在进入回测前预先生成。

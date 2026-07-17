@@ -64,6 +64,11 @@ class Settings:
     fusion_ic_min_periods: int = 20
     # 综合评分静态融合：用前半段样本计算 factor_score/fusion_weight，后半段验证 FUSED_SCORE_WEIGHTED。
     factor_weight_train_ratio: float = 0.5
+    # 滚动样本外验证：用过去训练窗口评价因子，再观察之后验证窗口表现。
+    rolling_oos_train_days: int = 180
+    rolling_oos_validation_days: int = 40
+    rolling_oos_step_days: int = 40
+    rolling_oos_min_validation_days: int = 20
     # 综合评分滚动融合：每个调仓日前只用历史窗口计算因子权重，再用于当期 FUSED_ROLLING_SCORE_WEIGHTED。
     rolling_factor_weight_lookback_days: int = 120
     rolling_factor_weight_min_days: int = 60

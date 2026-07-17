@@ -59,6 +59,52 @@ MONITOR_COLUMNS = [
     "top_minus_bottom_delta",
 ]
 
+ROLLING_VALIDATION_COLUMNS = [
+    "window_id",
+    "factor",
+    "train_start",
+    "train_end",
+    "validation_start",
+    "validation_end",
+    "train_ic_mean",
+    "validation_ic_mean",
+    "ic_mean_delta",
+    "train_positive_rate",
+    "validation_positive_rate",
+    "positive_rate_delta",
+    "train_excess_ann_return",
+    "validation_excess_ann_return",
+    "excess_ann_delta",
+    "train_information_ratio",
+    "validation_information_ratio",
+    "train_top_minus_bottom_ann",
+    "validation_top_minus_bottom_ann",
+    "top_minus_bottom_delta",
+    "train_monotonicity_score",
+    "validation_monotonicity_score",
+    "monotonicity_delta",
+    "train_n_days",
+    "validation_n_days",
+]
+
+ROLLING_SUMMARY_COLUMNS = [
+    "factor",
+    "n_windows",
+    "avg_validation_ic_mean",
+    "validation_ic_positive_window_rate",
+    "avg_validation_positive_rate",
+    "avg_validation_excess_ann_return",
+    "excess_positive_window_rate",
+    "avg_validation_information_ratio",
+    "avg_validation_top_minus_bottom_ann",
+    "top_minus_bottom_positive_window_rate",
+    "avg_validation_monotonicity_score",
+    "avg_ic_mean_delta",
+    "avg_excess_ann_delta",
+    "stable_window_rate",
+    "status",
+]
+
 
 def split_train_validation_dates(
     panel: pd.DataFrame,
@@ -257,6 +303,177 @@ def build_out_of_sample_validation(
     return out[VALIDATION_COLUMNS].reset_index(drop=True)
 
 
+def _validation_windows(
+    dates: pd.Index,
+    *,
+    train_days: int,
+    validation_days: int,
+    step_days: int,
+    min_validation_days: int,
+) -> list[tuple[pd.Index, pd.Index]]:
+    if len(dates) < 4:
+        return []
+    train_n = max(2, int(train_days))
+    validation_n = max(1, int(validation_days))
+    step_n = max(1, int(step_days))
+    min_val_n = max(1, int(min_validation_days))
+    windows: list[tuple[pd.Index, pd.Index]] = []
+    start = 0
+    while start + train_n + min_val_n <= len(dates):
+        train = dates[start : start + train_n]
+        val_end = min(start + train_n + validation_n, len(dates))
+        validation = dates[start + train_n : val_end]
+        if len(train) >= train_n and len(validation) >= min_val_n:
+            windows.append((train, validation))
+        start += step_n
+    return windows
+
+
+def build_rolling_out_of_sample_validation(
+    panel: pd.DataFrame,
+    prices: pd.DataFrame,
+    settings: Settings,
+    *,
+    factors: list[str] | None = None,
+    train_days: int | None = None,
+    validation_days: int | None = None,
+    step_days: int | None = None,
+    min_validation_days: int | None = None,
+) -> pd.DataFrame:
+    """
+    生成滚动样本外验证表。
+
+    与一次性 train/validation 切分不同，本函数按时间滚动多个窗口：
+    过去一段为训练窗口，紧随其后的一段为验证窗口，用来观察因子是否跨窗口稳定。
+    """
+    if not isinstance(panel.index, pd.MultiIndex):
+        raise TypeError("panel 须为 MultiIndex(date, symbol)")
+    factor_list = [str(x) for x in (factors or list(panel.columns)) if str(x) in panel.columns]
+    factor_list = [x for x in factor_list if panel[x].notna().sum() > 0]
+    if not factor_list:
+        return pd.DataFrame(columns=ROLLING_VALIDATION_COLUMNS)
+
+    panel_dates = pd.Index(panel.index.get_level_values("date").unique()).sort_values()
+    dates = pd.Index(pd.to_datetime(prices.index)).intersection(panel_dates).sort_values()
+    windows = _validation_windows(
+        dates,
+        train_days=int(train_days if train_days is not None else settings.rolling_oos_train_days),
+        validation_days=int(
+            validation_days if validation_days is not None else settings.rolling_oos_validation_days
+        ),
+        step_days=int(step_days if step_days is not None else settings.rolling_oos_step_days),
+        min_validation_days=int(
+            min_validation_days
+            if min_validation_days is not None
+            else settings.rolling_oos_min_validation_days
+        ),
+    )
+    if not windows:
+        return pd.DataFrame(columns=ROLLING_VALIDATION_COLUMNS)
+
+    rows: list[pd.DataFrame] = []
+    for window_id, (train_dates, validation_dates) in enumerate(windows, start=1):
+        train_panel = _panel_on_dates(panel[factor_list], train_dates)
+        validation_panel = _panel_on_dates(panel[factor_list], validation_dates)
+        train_prices = prices.loc[pd.Index(prices.index).isin(train_dates)]
+        validation_prices = prices.loc[pd.Index(prices.index).isin(validation_dates)]
+        train = _segment_metrics(train_panel, train_prices, factors=factor_list, settings=settings, segment="train")
+        validation = _segment_metrics(
+            validation_panel,
+            validation_prices,
+            factors=factor_list,
+            settings=settings,
+            segment="validation",
+        )
+        out = train.merge(validation, on="factor", how="outer")
+        out.insert(0, "window_id", int(window_id))
+        out.insert(2, "train_start", pd.Timestamp(train_dates[0]).strftime("%Y-%m-%d"))
+        out.insert(3, "train_end", pd.Timestamp(train_dates[-1]).strftime("%Y-%m-%d"))
+        out.insert(4, "validation_start", pd.Timestamp(validation_dates[0]).strftime("%Y-%m-%d"))
+        out.insert(5, "validation_end", pd.Timestamp(validation_dates[-1]).strftime("%Y-%m-%d"))
+
+        pairs = [
+            ("ic_mean", "train_ic_mean", "validation_ic_mean"),
+            ("positive_rate", "train_positive_rate", "validation_positive_rate"),
+            ("excess_ann", "train_excess_ann_return", "validation_excess_ann_return"),
+            ("top_minus_bottom", "train_top_minus_bottom_ann", "validation_top_minus_bottom_ann"),
+            ("monotonicity", "train_monotonicity_score", "validation_monotonicity_score"),
+        ]
+        for prefix, train_col, val_col in pairs:
+            if train_col not in out.columns:
+                out[train_col] = np.nan
+            if val_col not in out.columns:
+                out[val_col] = np.nan
+            out[f"{prefix}_delta"] = out[val_col].astype(float) - out[train_col].astype(float)
+        for col in ROLLING_VALIDATION_COLUMNS:
+            if col not in out.columns:
+                out[col] = np.nan
+        rows.append(out[ROLLING_VALIDATION_COLUMNS])
+
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=ROLLING_VALIDATION_COLUMNS)
+
+
+def summarize_rolling_out_of_sample_validation(rolling_validation: pd.DataFrame) -> pd.DataFrame:
+    """按因子汇总滚动样本外验证结果。"""
+    if rolling_validation.empty:
+        return pd.DataFrame(columns=ROLLING_SUMMARY_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for factor, g in rolling_validation.groupby("factor", sort=True):
+        valid = g.copy()
+        n_windows = int(valid["window_id"].nunique())
+        val_ic = pd.to_numeric(valid["validation_ic_mean"], errors="coerce")
+        val_pos = pd.to_numeric(valid["validation_positive_rate"], errors="coerce")
+        val_excess = pd.to_numeric(valid["validation_excess_ann_return"], errors="coerce")
+        val_ir = pd.to_numeric(valid["validation_information_ratio"], errors="coerce")
+        val_tb = pd.to_numeric(valid["validation_top_minus_bottom_ann"], errors="coerce")
+        val_mono = pd.to_numeric(valid["validation_monotonicity_score"], errors="coerce")
+        ic_delta = pd.to_numeric(valid["ic_mean_delta"], errors="coerce")
+        excess_delta = pd.to_numeric(valid["excess_ann_delta"], errors="coerce")
+
+        stable_mask = (
+            (val_ic.fillna(-np.inf) > 0.0)
+            & (val_excess.fillna(-np.inf) > 0.0)
+            & (val_tb.fillna(-np.inf) > 0.0)
+        )
+        stable_rate = float(stable_mask.mean()) if n_windows else np.nan
+        if np.isfinite(stable_rate) and stable_rate >= 0.6:
+            status = "ROBUST"
+        elif np.isfinite(stable_rate) and stable_rate >= 0.3:
+            status = "WATCH"
+        else:
+            status = "UNSTABLE"
+
+        rows.append(
+            {
+                "factor": str(factor),
+                "n_windows": n_windows,
+                "avg_validation_ic_mean": float(val_ic.mean()) if val_ic.notna().any() else np.nan,
+                "validation_ic_positive_window_rate": float((val_ic > 0).mean()) if len(val_ic) else np.nan,
+                "avg_validation_positive_rate": float(val_pos.mean()) if val_pos.notna().any() else np.nan,
+                "avg_validation_excess_ann_return": float(val_excess.mean()) if val_excess.notna().any() else np.nan,
+                "excess_positive_window_rate": float((val_excess > 0).mean()) if len(val_excess) else np.nan,
+                "avg_validation_information_ratio": float(val_ir.mean()) if val_ir.notna().any() else np.nan,
+                "avg_validation_top_minus_bottom_ann": float(val_tb.mean()) if val_tb.notna().any() else np.nan,
+                "top_minus_bottom_positive_window_rate": float((val_tb > 0).mean()) if len(val_tb) else np.nan,
+                "avg_validation_monotonicity_score": float(val_mono.mean()) if val_mono.notna().any() else np.nan,
+                "avg_ic_mean_delta": float(ic_delta.mean()) if ic_delta.notna().any() else np.nan,
+                "avg_excess_ann_delta": float(excess_delta.mean()) if excess_delta.notna().any() else np.nan,
+                "stable_window_rate": stable_rate,
+                "status": status,
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=ROLLING_SUMMARY_COLUMNS)
+    order = {"ROBUST": 0, "WATCH": 1, "UNSTABLE": 2}
+    out["_order"] = out["status"].map(order).fillna(3).astype(int)
+    out = out.sort_values(
+        ["_order", "stable_window_rate", "avg_validation_excess_ann_return", "factor"],
+        ascending=[True, False, False, True],
+    ).drop(columns=["_order"])
+    return out[ROLLING_SUMMARY_COLUMNS].reset_index(drop=True)
+
+
 def build_factor_decay_monitor(
     validation: pd.DataFrame,
     *,
@@ -352,6 +569,8 @@ def save_factor_validation_outputs(
     settings: Settings,
     validation: pd.DataFrame,
     monitor: pd.DataFrame,
+    rolling_validation: pd.DataFrame | None = None,
+    rolling_summary: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     """写入 output/factor_validation/ 下的样本外验证和失效监控表。"""
     base = settings.output_dir / "factor_validation"
@@ -362,4 +581,10 @@ def save_factor_validation_outputs(
     }
     validation.to_csv(paths["out_of_sample_validation"], index=False)
     monitor.to_csv(paths["factor_decay_monitor"], index=False)
+    if rolling_validation is not None:
+        paths["rolling_out_of_sample_validation"] = base / "rolling_out_of_sample_validation.csv"
+        rolling_validation.to_csv(paths["rolling_out_of_sample_validation"], index=False)
+    if rolling_summary is not None:
+        paths["rolling_out_of_sample_summary"] = base / "rolling_out_of_sample_summary.csv"
+        rolling_summary.to_csv(paths["rolling_out_of_sample_summary"], index=False)
     return paths

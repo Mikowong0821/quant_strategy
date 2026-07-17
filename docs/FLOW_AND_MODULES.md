@@ -66,9 +66,11 @@ flowchart TB
         IC --> FWROLL["调仓日前滚动综合权重<br/>lookback / min_days / 平滑"]
         GRP --> FWROLL
         FWROLL --> FWROLLOUT["rolling_factor_weight_log.csv"]
+        FWROLL --> FWSTAB["analysis/factor_weight_stability<br/>权重稳定性 / 漂移事件 / 主导因子"]
+        FWSTAB --> FWSTABOUT["factor_weight_stability_summary.csv<br/>factor_weight_drift_events.csv<br/>factor_weight_portfolio_drift.csv"]
         RPANEL --> OOS["analysis/factor_validation<br/>训练段 vs 样本外验证"]
         WIDE --> OOS
-        OOS --> OOSOUT["output/factor_validation<br/>out_of_sample_validation.csv<br/>factor_decay_monitor.csv"]
+        OOS --> OOSOUT["output/factor_validation<br/>out_of_sample_validation.csv<br/>factor_decay_monitor.csv<br/>rolling_out_of_sample_*.csv"]
         DQ --> FSEL["analysis/factor_selection<br/>PASS / WATCH / REJECT"]
         FW --> FSEL
         OOS --> FSEL
@@ -210,7 +212,10 @@ flowchart TB
 | 7 | `analysis/ic` | 每个交易日：因子 vs **前瞻**收益的截面 Spearman；汇总 mean_IC、分位数、正负占比与滚动稳定性 | **因子评价**；并作为 **融合列权** 输入（滞后 rolling，见 `fuse_ic_weighted_zscore`） |
 | 8 | `analysis/factor_diagnostics` | 对每个因子构造 Top-K 等权多头腿；同时按因子从低到高分组，计算每组持有期收益、Top-Bottom 与单调性 | 回答“高分组有没有主动收益”以及“全排序是否有收益层次”，介于 IC 与完整回测之间 |
 | 9 | `models/factor_weighting` | 综合 IC、rolling IC、Top-Bottom 与单调性，生成 `factor_score` / `fusion_weight` 建议表；同时可在训练段和调仓日前历史窗口生成实际使用的权重 | 把因子评价结果转成可审计、可验证、可滚动更新的权重 |
-| 10 | `analysis/factor_validation` | 把 IC、多头超额、Top-Bottom 与单调性按训练段 / 验证段拆开比较，并生成失效监控状态 | 回答“训练期有效的因子，样本外是否还有效”，为后续剔除、降权或观察因子提供证据 |
+| 9A | `analysis/factor_weight_stability` | 基于 `rolling_factor_weight_log.csv` 统计每个因子的权重稳定性、漂移事件、组合层主导因子和有效因子数量 | 判断滚动权重是在稳定适应市场，还是出现过快跳变或单一因子主导 |
+| 10 | `analysis/factor_validation` | 把 IC、多头超额、Top-Bottom 与单调性按训练段 / 验证段拆开比较，并生成失效监控状态；同时按滚动训练 / 验证窗口生成 rolling OOS 明细和汇总 | 回答“训练期有效的因子，样本外是否还有效”，以及“这个有效性是否跨时间窗口稳定” |
+| 10B | `analysis/multi_universe_validation` | 读取多个已完成回测 output 目录，汇总策略绩效和因子 Top-K 多头超额在不同股票池上的表现 | 回答“策略/因子是不是只在一个股票池里有效”，把单股票池验证扩展成横向稳健性验证 |
+| 10C | `analysis/parameter_sensitivity` | 在同一份价格和因子缓存上一次只改一个参数，重新跑轻量回测并汇总明细与稳健性 | 回答“策略是不是只在某一个精确参数下好看”，避免参数过拟合 |
 | 11 | `analysis/factor_selection` | 汇总覆盖率、综合因子评分和样本外失效监控，生成 `PASS/WATCH/REJECT` 准入表 | 把“因子评价”变成“能否进入主融合”的交易层决策 |
 | 12 | `analysis/factor_redundancy` | 计算每日横截面因子相关性均值，输出相关矩阵和高相关因子对，并在主融合候选池里剔除冗余因子 | 防止多个高度相似的因子重复进入主策略，把“因子多”变成“信息不重复” |
 | 13 | `analysis/factor_composite` | 将准入 + 去冗余后的原始因子按量价、估值、质量、成长、现金流、ML 等风格层合成复合分数 | 让主融合从“原始因子堆叠”升级为“风格层融合”，提高解释性和监控性 |
@@ -240,6 +245,8 @@ flowchart TB
 | 35 | `live/paper_run_control` | 从价格缓存提取交易日日历，检查运行日是否为交易日，并检查同日纸面账户快照是否已存在 | 防止周末/节假日误写新快照，也防止重复运行无意覆盖账户状态 |
 | 36 | `live/paper_scheduler` / `scripts/run_scheduled_daily_paper.py` | 运行一次日终纸面交易，记录调度参数、stdout、stderr 和退出码 | 让 cron / launchd / 服务器调度器有稳定入口，也让失败有可查日志 |
 | 37 | `live/broker_reconcile` / `scripts/reconcile_paper_broker.py` | 对比纸面账户与只读券商账户的现金、总资产和逐股票持仓差异 | 在真实下单前先发现纸面账户和真实账户是否已经偏离 |
+| 38 | `scripts/build_multi_universe_validation.py` | 从多个回测输出目录生成 `strategy_universe_*.csv` 与 `factor_universe_*.csv` | 对同一策略和因子做跨股票池验证，避免只看单一股票池的漂亮结果 |
+| 39 | `scripts/build_parameter_sensitivity.py` | 读取已有 `output/cache`，对代表信号做 `top_k`、调仓频率、配权方式和风控参数扰动 | 检查收益、超额、回撤、换手和集中度是否对参数过度敏感 |
 
 **说明**：`run_multi_backtest` 另支持 **`factors` + `weights` 线性加权** 合成得分（`multi_mode=linear_weight`），`main` 当前未使用。
 
@@ -281,8 +288,10 @@ flowchart TB
 - **机器学习打分因子（`ML_SCORE`）**：`factors.factor_ml` 用基础因子作为特征，用未来 `ml_score_forward_days` 日收益作为标签，按时间滚动训练梯度提升类模型。预测日 `t` 的训练样本只允许使用 `feature_date + forward_days <= t` 的历史样本，避免标签泄漏。`ML_SCORE` 只是候选因子，仍需经过 IC、分组收益、样本外验证和回测。
 - **因子多头超额**：`analysis.factor_diagnostics` 不做复杂配权、不计交易成本，只看某个因子 Top-K 等权多头腿相对股票池等权基准的主动收益；它是判断“因子有没有多头解释力”的中间层，不替代完整回测。
 - **分组收益与单调性**：同一诊断层还会把每个调仓日的股票按因子从低到高分成 `Settings.factor_group_count` 组，计算每组到下一调仓日的平均收益。`top_minus_bottom_*` 看高分组减低分组，`monotonicity_score` 看长期分组均值是否随因子分数升高而递增。
-- **多因子权重建议与验证**：`models.factor_weighting` 将 `mean_ic`、`ic_ir`、正 IC 占比、rolling IC、Top-Bottom 与单调性转成 `factor_score` 和 `fusion_weight`。全样本 `factor_weight_summary.csv` 用于诊断审计；训练段 `factor_weight_train_summary.csv` 会被 `fuse_static_weight_zscore` 固定成 `FUSED_SCORE_WEIGHTED`；滚动日志 `rolling_factor_weight_log.csv` 记录每个调仓日前的历史窗口、raw/constrained/final 权重和 fallback 原因，并生成 `FUSED_ROLLING_SCORE_WEIGHTED`。
-- **样本外验证与因子失效监控**：`analysis.factor_validation` 使用和因子诊断相同的 IC、多头超额、分组收益口径，但按时间切成训练段和验证段。`out_of_sample_validation.csv` 看指标有没有从训练期掉到样本外；`factor_decay_monitor.csv` 把结果压缩成 `OK/WATCH/DEGRADED/FAILED`。
+- **多因子权重建议与验证**：`models.factor_weighting` 将 `mean_ic`、`ic_ir`、正 IC 占比、rolling IC、Top-Bottom 与单调性转成 `factor_score` 和 `fusion_weight`。全样本 `factor_weight_summary.csv` 用于诊断审计；训练段 `factor_weight_train_summary.csv` 会被 `fuse_static_weight_zscore` 固定成 `FUSED_SCORE_WEIGHTED`；滚动日志 `rolling_factor_weight_log.csv` 记录每个调仓日前的历史窗口、raw/constrained/final 权重和 fallback 原因，并生成 `FUSED_ROLLING_SCORE_WEIGHTED`；`analysis.factor_weight_stability` 再把滚动日志压缩成权重稳定性、漂移事件和组合层主导因子，判断权重是否在乱跳。
+- **样本外验证与因子失效监控**：`analysis.factor_validation` 使用和因子诊断相同的 IC、多头超额、分组收益口径，但按时间切成训练段和验证段。`out_of_sample_validation.csv` 看指标有没有从训练期掉到样本外；`factor_decay_monitor.csv` 把结果压缩成 `OK/WATCH/DEGRADED/FAILED`；`rolling_out_of_sample_validation.csv` 和 `rolling_out_of_sample_summary.csv` 进一步用多个训练/验证窗口观察因子跨时间是否稳定。
+- **多股票池验证**：`analysis.multi_universe_validation` 不重新计算因子，也不重新撮合交易，而是读取多个已经完成的 `output` 目录，例如 A50、光模块 / PCB、CCL / MLCC，汇总 `performance_summary.csv` 和 `factor_diagnostics/long_excess_summary.csv`。它回答的是横向问题：同一策略或因子在不同股票池里是否都站得住；如果只在一个池子有效，就不能直接当成稳健 alpha。
+- **参数敏感性分析**：`analysis.parameter_sensitivity` 复用已有价格和标准化因子缓存，在 baseline 附近一次只改一个参数，例如 `top_k`、调仓频率、配权方式、单票上限、换手上限、波动率目标和最小持仓规则。它不负责找“最优参数”，而是观察策略是否对某个精确参数过度依赖。
 - **因子入选与剔除机制**：`analysis.factor_selection` 汇总因子覆盖率、综合评分和失效监控，输出 `factor_selection_summary.csv`，把每个因子标记为 `PASS/WATCH/REJECT`。主融合候选池优先使用 `PASS` 因子；如果没有 `PASS`，回退 `WATCH`；如果仍为空，才回退原始因子池。单因子回测仍保留所有因子，便于持续观察。
 - **因子相关性与冗余分析**：`analysis.factor_redundancy` 按交易日计算因子横截面相关性，再对每日相关性取平均，输出 `factor_correlation_matrix.csv`、`factor_correlation_days.csv` 和 `factor_redundancy_report.csv`。若两个主融合候选因子高度相关，会优先保留准入状态更好、`factor_score` 更高的因子，另一个只保留研究诊断，不默认进入主融合。
 - **因子分层与复合因子体系**：`analysis.factor_composite` 将准入并去冗余后的原始因子按风格层合成 `PRICE_VOLUME_STYLE`、`VALUE_STYLE`、`QUALITY_STYLE`、`GROWTH_STYLE`、`CASHFLOW_STYLE`、`ML_STYLE` 等复合分数。主融合优先使用这些风格层；若复合层为空，则回退去冗余后的原始因子池。
@@ -347,6 +356,9 @@ flowchart TB
 | `output/factor_diagnostics/factor_weight_summary.csv` | 全样本综合因子评分和融合权重建议，用于诊断审计 |
 | `output/factor_diagnostics/factor_weight_train_summary.csv` | 训练段综合因子评分和静态融合权重，实际用于 `FUSED_SCORE_WEIGHTED` 验证回测 |
 | `output/factor_diagnostics/rolling_factor_weight_log.csv` | 每个调仓日前滚动计算的因子权重、权重上下限 / 平滑后的结果和 fallback 原因，实际用于 `FUSED_ROLLING_SCORE_WEIGHTED` |
+| `output/factor_diagnostics/factor_weight_stability_summary.csv` | 每个因子的平均权重、最新权重、权重区间、平均 / 最大单期变化、稳定性分数和 PASS / WATCH 状态 |
+| `output/factor_diagnostics/factor_weight_drift_events.csv` | 权重跳升、跳降、进入活跃、退出活跃等漂移事件，用于发现滚动权重是否突然变化 |
+| `output/factor_diagnostics/factor_weight_portfolio_drift.csv` | 每期因子权重层面的主导因子、主导权重、有效因子数量和权重换手 |
 | `output/factor_diagnostics/factor_composite_components.csv` | 每个复合风格因子由哪些原始因子组成，以及覆盖率、有效样本数 |
 | `output/factor_diagnostics/factor_composite_scores.csv` | 每个交易日、每只股票的复合风格因子分数 |
 | `output/factor_diagnostics/style_exposure.csv` | 每个融合策略、每个调仓日、每个复合风格层的组合加权暴露 |
@@ -354,6 +366,14 @@ flowchart TB
 | `output/factor_diagnostics/style_exposure_return_link.csv` | 风格暴露与下一持有期收益的轻量关联表，用于解释风格倾斜是否有收益贡献迹象 |
 | `output/factor_validation/out_of_sample_validation.csv` | 每个因子训练段与样本外验证段的 IC、多头超额、Top-Bottom 和单调性对照 |
 | `output/factor_validation/factor_decay_monitor.csv` | 每个因子的失效监控状态、严重程度和触发原因 |
+| `output/factor_validation/rolling_out_of_sample_validation.csv` | 每个滚动窗口、每个因子的训练段 / 验证段 IC、多头超额、Top-Bottom 和单调性明细 |
+| `output/factor_validation/rolling_out_of_sample_summary.csv` | 每个因子跨滚动窗口的平均验证表现、正窗口比例、稳定窗口率和 ROBUST / WATCH / UNSTABLE 状态 |
+| `output/multi_universe_validation/strategy_universe_performance.csv` | 多股票池策略逐池绩效明细，包含年化收益、超额年化、信息比率和最大回撤 |
+| `output/multi_universe_validation/strategy_universe_robustness.csv` | 多股票池策略稳健性汇总，统计正收益池占比、正超额池占比和 ROBUST / WATCH / UNSTABLE 状态 |
+| `output/multi_universe_validation/factor_universe_performance.csv` | 多股票池因子 Top-K 多头超额逐池表现 |
+| `output/multi_universe_validation/factor_universe_robustness.csv` | 多股票池因子稳健性汇总，统计正超额池占比、平均信息比率和 ROBUST / WATCH / UNSTABLE 状态 |
+| `output/parameter_sensitivity/parameter_sensitivity_detail.csv` | 参数敏感性逐变体明细，包含参数取值、收益、超额、回撤、换手和集中度 |
+| `output/parameter_sensitivity/parameter_sensitivity_summary.csv` | 参数敏感性按参数汇总，给出平均表现、最差表现、正超额比例和 ROBUST / WATCH / UNSTABLE 状态 |
 | `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准、换手成本和集中度指标 |
 | `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank`，以及 `target_turnover`、`turnover_capped`、行业上限、波动率目标、最小持仓检查、现金目标仓位、流动性过滤前后候选数量等 |
 | `output/decision_logs/<strategy>.csv` | 各策略逐股票决策审计：因子分数/排名、是否通过流动性过滤、是否入选、行业、上期/目标/最终权重、动作与原因标签 |

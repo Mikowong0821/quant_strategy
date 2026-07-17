@@ -499,6 +499,9 @@ def save_factor_diagnostics(
     factor_correlation_matrix: pd.DataFrame | None = None,
     factor_correlation_days: pd.DataFrame | None = None,
     factor_redundancy_report: pd.DataFrame | None = None,
+    factor_weight_stability_summary: pd.DataFrame | None = None,
+    factor_weight_drift_events: pd.DataFrame | None = None,
+    factor_weight_portfolio_drift: pd.DataFrame | None = None,
 ) -> Dict[str, Path]:
     """保存因子诊断表：多头超额、分组收益、权重、准入、复合因子与冗余报告。"""
     base = settings.output_dir / "factor_diagnostics"
@@ -564,6 +567,21 @@ def save_factor_diagnostics(
         redundancy_path = base / "factor_redundancy_report.csv"
         factor_redundancy_report.to_csv(redundancy_path, index=False)
         out["factor_redundancy_report"] = redundancy_path
+
+    if factor_weight_stability_summary is not None:
+        stability_path = base / "factor_weight_stability_summary.csv"
+        factor_weight_stability_summary.to_csv(stability_path, index=False)
+        out["factor_weight_stability_summary"] = stability_path
+
+    if factor_weight_drift_events is not None:
+        drift_path = base / "factor_weight_drift_events.csv"
+        factor_weight_drift_events.to_csv(drift_path, index=False, date_format="%Y-%m-%d")
+        out["factor_weight_drift_events"] = drift_path
+
+    if factor_weight_portfolio_drift is not None:
+        portfolio_drift_path = base / "factor_weight_portfolio_drift.csv"
+        factor_weight_portfolio_drift.to_csv(portfolio_drift_path, index=False, date_format="%Y-%m-%d")
+        out["factor_weight_portfolio_drift"] = portfolio_drift_path
 
     return out
 
