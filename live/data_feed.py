@@ -31,8 +31,7 @@ def get_data_tushare(
         raise ImportError("需要安装 tushare: pip install tushare") from e
 
     tok = (token or "").strip() or get_tushare_token()
-    ts.set_token(tok)
-    pro = ts.pro_api()
+    pro = ts.pro_api(tok)
 
     def _norm(d: str) -> str:
         return d.replace("-", "")[:8]
@@ -73,8 +72,7 @@ def fetch_fina_indicator_panel(
         raise ImportError("需要安装 tushare: pip install tushare") from e
 
     tok = (token or "").strip() or get_tushare_token()
-    ts.set_token(tok)
-    pro = ts.pro_api()
+    pro = ts.pro_api(tok)
 
     def _norm(d: str) -> str:
         return d.replace("-", "")[:8]

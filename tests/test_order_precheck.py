@@ -122,6 +122,41 @@ class TestOrderPrecheck(unittest.TestCase):
         self.assertEqual(str(checked.loc[0, "check_status"]), "BLOCK")
         self.assertIn("not_lot_size", str(checked.loc[0, "check_reason"]))
 
+    def test_risk_blacklist_blocks_order(self) -> None:
+        orders = pd.DataFrame(
+            {
+                "date": ["2024-01-31", "2024-01-31"],
+                "symbol": ["AAA", "BBB"],
+                "side": ["BUY", "BUY"],
+                "delta_shares": [100, 100],
+                "price": [10.0, 10.0],
+                "estimated_amount": [1_000.0, 1_000.0],
+            }
+        )
+        risk_blacklist = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "severity": "HIGH",
+                    "reason": "earnings_uncertainty",
+                },
+            ]
+        )
+
+        checked = precheck_order_plan(
+            orders,
+            cash=10_000.0,
+            risk_blacklist=risk_blacklist,
+            lot_size=100,
+        )
+        by_symbol = checked.set_index("symbol")
+
+        self.assertEqual(str(by_symbol.loc["AAA", "check_status"]), "BLOCK")
+        self.assertIn("risk_blacklist", str(by_symbol.loc["AAA", "check_reason"]))
+        self.assertTrue(bool(by_symbol.loc["AAA", "is_blacklisted"]))
+        self.assertEqual(str(by_symbol.loc["AAA", "blacklist_reason"]), "earnings_uncertainty")
+        self.assertEqual(str(by_symbol.loc["BBB", "check_status"]), "PASS")
+
 
 if __name__ == "__main__":
     unittest.main()

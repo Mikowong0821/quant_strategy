@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pandas as pd
+
+from live.risk_blacklist import risk_blacklist_map
 
 
 CHECK_COLUMNS = [
@@ -27,6 +29,9 @@ CHECK_COLUMNS = [
     "is_suspended",
     "is_limit_up",
     "is_limit_down",
+    "is_blacklisted",
+    "blacklist_severity",
+    "blacklist_reason",
 ]
 
 
@@ -107,9 +112,11 @@ def precheck_order_plan(
     cash: float,
     current_positions: pd.DataFrame | Mapping[str, float] | pd.Series | None = None,
     trade_status: pd.DataFrame | Mapping[str, Mapping[str, Any]] | None = None,
+    risk_blacklist: pd.DataFrame | Mapping[str, Any] | Iterable[str] | None = None,
     lot_size: int = 100,
     min_order_amount: float = 0.0,
     cash_buffer: float = 0.0,
+    block_blacklisted: bool = True,
 ) -> pd.DataFrame:
     """
     检查订单计划是否满足基础执行约束。
@@ -118,9 +125,11 @@ def precheck_order_plan(
     :param cash: 当前可用现金
     :param current_positions: 当前持仓；若含 `available_shares` 列则卖出检查优先使用它
     :param trade_status: 停牌 / 涨跌停状态，含 `is_suspended/is_limit_up/is_limit_down`
+    :param risk_blacklist: 风险黑名单，含 `symbol/ts_code` 与可选 `reason/severity`
     :param lot_size: 买入订单应满足的最小交易单位
     :param min_order_amount: 小于该金额的 BUY/SELL 标记为 BLOCK
     :param cash_buffer: 买入后至少保留的现金缓冲
+    :param block_blacklisted: 是否直接阻断命中黑名单的 BUY/SELL 订单
     :return: 每笔订单的检查结果，列见 `CHECK_COLUMNS`
     """
     if lot_size <= 0:
@@ -142,6 +151,10 @@ def precheck_order_plan(
 
     available = _available_shares(current_positions)
     status_by_symbol = _status_map(trade_status)
+    blacklist_by_symbol = risk_blacklist_map(
+        risk_blacklist,
+        trade_date=order_plan["date"].max() if "date" in order_plan.columns else None,
+    )
     orders = order_plan.copy()
     orders["side"] = orders["side"].astype(str).str.upper()
     orders["_order_rank"] = orders["side"].map(_order_rank)
@@ -161,6 +174,10 @@ def precheck_order_plan(
         limit_up = bool(flags.get("is_limit_up", False))
         limit_down = bool(flags.get("is_limit_down", False))
         available_shares = int(round(float(available.get(symbol, 0.0))))
+        blacklist_info = blacklist_by_symbol.get(symbol, {})
+        is_blacklisted = bool(blacklist_info)
+        blacklist_reason = str(blacklist_info.get("reason", ""))
+        blacklist_severity = str(blacklist_info.get("severity", ""))
 
         reasons: list[str] = []
         if side not in {"BUY", "SELL", "HOLD"}:
@@ -187,6 +204,8 @@ def precheck_order_plan(
             reasons.append("insufficient_available_shares")
         if side == "BUY" and cash_now - amount < cash_buffer:
             reasons.append("insufficient_cash")
+        if block_blacklisted and is_blacklisted and side in {"BUY", "SELL"}:
+            reasons.append("risk_blacklist")
 
         status = "PASS" if not reasons else "BLOCK"
         if status == "PASS":
@@ -211,6 +230,9 @@ def precheck_order_plan(
                 "is_suspended": suspended,
                 "is_limit_up": limit_up,
                 "is_limit_down": limit_down,
+                "is_blacklisted": is_blacklisted,
+                "blacklist_severity": blacklist_severity,
+                "blacklist_reason": blacklist_reason,
             }
         )
 

@@ -9,7 +9,9 @@ from typing import Any, Iterable
 import pandas as pd
 
 from config import Settings
+from live.factor_health_report import summarize_factor_health_report
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
+from live.risk_blacklist import summarize_risk_blacklist_for_report
 from live.style_exposure_monitor import summarize_style_exposure_for_report
 
 
@@ -213,6 +215,73 @@ def _style_exposure_section(style_exposure: pd.DataFrame | None) -> list[str]:
     return lines
 
 
+def _enhanced_factor_health_section(health_report: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_factor_health_report(health_report)
+    lines = [
+        "## 增强因子健康总览",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if health_report is None or health_report.empty:
+        lines.extend(
+            [
+                "- 明细：未找到增强因子健康总览，默认读取 `output/factor_validation/`、`output/factor_diagnostics/` 和 `output/market_regime/`。",
+                "",
+            ]
+        )
+        return lines
+
+    display = health_report.copy()
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                ["category", "status", "summary", "detail", "action"],
+                ["类别", "状态", "摘要", "明细", "处理动作"],
+                max_rows=20,
+            ),
+        ]
+    )
+    return lines
+
+
+def _risk_blacklist_section(risk_blacklist: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_risk_blacklist_for_report(risk_blacklist)
+    lines = [
+        "## 风险预警与黑名单",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if risk_blacklist is None or risk_blacklist.empty:
+        lines.extend(
+            [
+                "- 明细：未找到有效黑名单；默认读取 `data/risk_blacklist.csv`，也可通过 `--risk-blacklist` 指定。",
+                "",
+            ]
+        )
+        return lines
+
+    display = risk_blacklist.copy()
+    for col in ["created_at", "expires_at"]:
+        if col in display.columns:
+            display[col] = pd.to_datetime(display[col], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                ["symbol", "name", "severity", "reason", "source", "created_at", "expires_at"],
+                ["标的", "名称", "风险等级", "原因", "来源", "生效日", "失效日"],
+                max_rows=30,
+            ),
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -236,6 +305,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     guard_issues = list(result.get("guard_issues", []) or [])
     factor_monitor = result.get("factor_decay_monitor")
     style_exposure = result.get("style_exposure")
+    factor_health_report = result.get("factor_health_report")
+    risk_blacklist = result.get("risk_blacklist")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -289,6 +360,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
 
     lines.extend(_factor_health_section(factor_monitor))
     lines.extend(_style_exposure_section(style_exposure))
+    lines.extend(_enhanced_factor_health_section(factor_health_report))
+    lines.extend(_risk_blacklist_section(risk_blacklist))
 
     blocked = checks[checks["check_status"] == "BLOCK"] if not checks.empty else checks
     lines.extend(
@@ -304,8 +377,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
             "",
             _markdown_table(
                 blocked,
-                ["symbol", "side", "delta_shares", "estimated_amount", "check_reason"],
-                ["标的", "方向", "股数变化", "预估金额", "阻断原因"],
+                ["symbol", "side", "delta_shares", "estimated_amount", "check_reason", "blacklist_reason"],
+                ["标的", "方向", "股数变化", "预估金额", "阻断原因", "黑名单说明"],
             ),
             "## 纸面成交",
             "",

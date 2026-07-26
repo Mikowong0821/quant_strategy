@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **因子清洗与行业内标准化 → 数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.style_exposure_monitor`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成带因子健康和风格暴露的日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
+本文描述从 `main.py` 入口到 **因子清洗与行业内标准化 → 数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.order_precheck`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.factor_health_report`、`live.style_exposure_monitor`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成带因子健康、增强因子健康总览和风格暴露的日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
 
 ---
 
@@ -12,6 +12,7 @@ flowchart TB
         CSV["data/prices_demo.csv（可选）"]
         POOL["live/stock_pool<br/>Excel / CSV 股票池"]
         CACHE["data/prices_tushare_cache.csv<br/>Tushare 本地缓存"]
+        EVENTS["data/announcement_events.csv<br/>公告事件表（可选）"]
         TS["live/data_feed<br/>Tushare / 合成兜底"]
         CSV --> LONG["长表 long_df"]
         CACHE --> LONG
@@ -23,7 +24,8 @@ flowchart TB
     subgraph panel["因子层"]
         WIDE --> FB["factors/panel_builder<br/>build_four_factor_panel"]
         LONG --> FB
-        FB --> BASEPANEL["基础因子面板<br/>量价 / 估值 / 质量 / 成长 / 现金流"]
+        EVENTS --> FB
+        FB --> BASEPANEL["基础因子面板<br/>量价 / 估值 / 质量 / 成长 / 现金流 / 公告事件"]
         BASEPANEL --> ML["factors/factor_ml<br/>滚动训练 ML_SCORE"]
         WIDE --> ML
         ML --> PANEL["原始因子面板 panel<br/>基础因子 + ML_SCORE"]
@@ -136,6 +138,9 @@ flowchart TB
         NAVC --> BENCH
         BENCH --> EXCESS["超额收益 / 跟踪误差 / 信息比率"]
         EXCESS --> PERF
+        BENCH --> REGIME["analysis/market_regime<br/>BULL / BEAR / SIDEWAYS"]
+        NAVC --> REGIME
+        REGIME --> REGIMEOUT["output/market_regime<br/>strategy_regime_*.csv"]
         BT --> META["meta：调仓记录 rebalance_log<br/>每期 top_k 股票及权重"]
         META --> TO["analysis/turnover<br/>换手率 / 预估交易成本"]
         TO --> PERF
@@ -189,6 +194,8 @@ flowchart TB
         RUNNER --> GUARD
         STYLECSV["output/factor_diagnostics<br/>style_exposure.csv"] --> STYLEMON["live/style_exposure_monitor<br/>最近一期目标组合风格暴露"]
         STYLEMON --> REPORT
+        HEALTHCSV["factor_validation / factor_diagnostics / market_regime<br/>诊断 CSV"] --> HEALTHMON["live/factor_health_report<br/>增强因子健康总览"]
+        HEALTHMON --> REPORT
         RUNNER --> REPORT["live/paper_report<br/>Markdown 纸面交易日报"]
         REPORT --> REPORTCSV["output/paper_reports/<strategy>/<date>.md"]
         SCHED --> SLOG["output/scheduler_logs/<date>.log"]
@@ -205,7 +212,8 @@ flowchart TB
 |------|------|--------|------|
 | 1 | `config.get_settings()` | 读路径、区间、`top_k`、费率、`portfolio_weighting`、IC 前瞻天数等 | 集中参数，避免魔法数 |
 | 2 | `live/stock_pool` + `live/data_feed` + `backtest_utils` | 优先本地 demo / Tushare 缓存；否则从 Excel/CSV 股票池读取标的并拉取 Tushare 日线，得到 `long_df`、`prices` 宽表 | 摆脱默认示例股票池，统一真实股票池、行情缓存与回测数据形态 |
-| 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量等基础列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
+| 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量、公告事件得分等基础列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
+| 3A | `factors/factor_events` | 从本地公告事件表生成 `ANNOUNCEMENT_EVENT_SCORE`，按公告日向后衰减；文件不存在时该列为空 | 把公告、事件、风险提示先结构化成可检验因子，不把工程绑定死在某个新闻源 |
 | 4 | `factors/factor_ml` | 用基础因子作为特征、未来收益作为标签，按时间滚动训练梯度提升类模型并追加 `ML_SCORE` | 把机器学习作为候选因子，而不是直接替代策略；训练样本只使用预测日前可观察到完整标签的历史数据 |
 | 5 | `analysis/data_quality` | 统计价格覆盖、因子覆盖、调仓日有效截面 | 判断结果是否建立在足够样本上 |
 | 6 | `factors/preprocess` + `live/cache_io.save_run_cache`（可选） | 生成横截面标准化因子面板，并写 `output/cache/*.csv` | 复现与离线分析；多因子融合使用统一 z-score 口径 |
@@ -225,10 +233,11 @@ flowchart TB
 | 17 | `analysis/performance.summarize` | 由净值序列算年化收益、波动、**事后夏普**、最大回撤 | **成绩单**：描述这条净值曲线，与 `maximize_sharpe`（配权目标）不是同一对象 |
 | 18 | `backtest.backtest_multi` | **`run_multi_backtest(fused=...)`** 对融合得分回测（内部 `run_single_backtest`） | 多因子组合策略的一条净值 |
 | 19 | `analysis/benchmark` | 构造股票池等权基准，计算超额收益、跟踪误差、信息比率 | 判断策略收益来自 alpha，还是来自市场/股票池整体上涨 |
-| 20 | `analysis/turnover` | 由 `rebalance_log` 计算换手率、预估交易成本 | 判断收益是否依赖高频换仓，估算成本压力 |
-| 21 | `analysis/risk_exposure` | 由 `rebalance_log` 计算 HHI、effective_n、Top 权重 | 判断持仓是否过度集中，补充组合风控视角 |
-| 22 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` | 可复现、可对照、可审计 |
-| 23 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
+| 20 | `analysis/market_regime` | 用股票池等权基准识别 BULL / BEAR / SIDEWAYS，并统计每条策略分段收益、超额、回撤和状态 | 回答“策略到底适合什么市场环境”，避免只看总净值 |
+| 21 | `analysis/turnover` | 由 `rebalance_log` 计算换手率、预估交易成本 | 判断收益是否依赖高频换仓，估算成本压力 |
+| 22 | `analysis/risk_exposure` | 由 `rebalance_log` 计算 HHI、effective_n、Top 权重 | 判断持仓是否过度集中，补充组合风控视角 |
+| 23 | `live/cache_io` 实验记录 | 写 `run_config.json`、`performance_summary.csv`、`factor_diagnostics/*.csv`、`factor_validation/*.csv`、`market_regime/*.csv`、`data_quality/*.csv`、`rebalance_logs/*.csv`、`decision_logs/*.csv`、`turnover_logs/*.csv`、`risk_exposure/*.csv` | 可复现、可对照、可审计 |
+| 24 | `analysis/plotting.plot_nav` 等 | 净值 / 超额净值 / IC / 权重 / 换手 / 集中度 / 覆盖率图 | 可视化 |
 | 23 | `live/order_builder` | 读取目标权重、当前持仓、最新价格、现金 / 总资产，按手数和最小订单金额生成订单计划 | 把研究层的“目标权重”转成准实盘层的“买卖多少股” |
 | 23 | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
 | 24 | `live/broker` + `live/broker_factory` | 定义 `BrokerAdapter`、`SimulatedBroker`、`RealBrokerReadOnlyAdapter`，并按 `broker_mode/broker_provider` 创建对应 Adapter | 给纸面、模拟和未来真实券商一个共同接口；真实券商先用只读 adapter 验证查询能力，具体通道统一注册到 Factory |
@@ -237,8 +246,9 @@ flowchart TB
 | 27 | `live/stock_pool` + `scripts/build_live_universe.py` | 从人工研究池、价格缓存和交易状态生成过滤报告与 `active_universe_<date>.csv` | 在券商接口前确认“今天系统允许在哪些股票里选”，避免直接拿人工池下单 |
 | 28 | `live/paper_runner` | 读取账户状态，串联订单生成、预检查、执行模式选择、成交回报兼容、持仓更新、账户快照与 CSV 落盘 | 把多个准实盘零件收束成“每天运行一次”的可调用入口；可选通过 `SimulatedBroker` 执行 |
 | 29 | `scripts/run_daily_paper.py` | 从 `output/rebalance_logs/<strategy>.csv` 读取最近目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用 `run_daily_paper_trade` | 把函数入口变成可手动运行、后续可被定时任务调用的日终命令；支持 `--execution-mode simulated_broker` |
-| 30 | `live/paper_report` | 将单日纸面运行结果整理成 Markdown 日报 | 每天跑完后可以直接复盘订单、阻断、成交、券商订单回报、持仓和账户变化 |
+| 30 | `live/paper_report` | 将单日纸面运行结果整理成 Markdown 日报 | 每天跑完后可以直接复盘订单、阻断、成交、券商订单回报、持仓、账户变化和研究健康状态 |
 | 31 | `live/style_exposure_monitor` | 读取 `output/factor_diagnostics/style_exposure.csv`，取当前策略不晚于运行日的最近一期风格暴露 | 让每日纸面交易日报同时展示目标组合偏向哪些风格，而不只展示订单和账户变化 |
+| 31A | `live/factor_health_report` | 读取因子准入、样本外失效、滚动样本外、权重漂移、因子冗余和牛熊市分段 CSV，生成增强因子健康总览 | 把重型研究体检结果压缩进日常纸面交易日报，不在日终流程里重新计算 |
 | 32 | `live/manual_confirmation` | 基于订单计划、预检查和可选因子失效监控生成 CSV / Markdown 人工确认单 | 让系统给建议、人手在券商终端执行；这是自动下单前的小资金安全闸门 |
 | 33 | `live/execution_feedback` / `scripts/build_execution_feedback.py` | 读取人工确认单中的真实成交回填字段，比较建议订单和实际成交 | 让小资金手动交易之后能复盘执行数量、成交价格、滑点、未成交和部分成交 |
 | 34 | `live/paper_guard` | 在日终纸面运行前检查目标权重、价格、日期，在运行后检查现金、持仓、订单检查和成交日志 | 把“看起来跑完了但输入/结果异常”的情况显式暴露；ERROR 阻断，WARNING 进入摘要和日报 |
@@ -266,14 +276,19 @@ flowchart TB
 - **波动率目标（`target_volatility`）**：默认 0 表示关闭；设为正数后，回测按 `volatility_target_lookback_days` 的历史协方差估算目标组合年化波动。若估算波动超过目标，则按 `target_volatility / estimated_volatility` 缩小股票目标仓位，剩余作为现金；MVP 只降仓位，不加杠杆。
 - **最小持仓数量（`min_positions`）**：默认 0 表示关闭；若有效目标持仓数少于阈值，则把股票总仓位缩到 `min_positions_exposure`，剩余保留现金，避免可交易标的不足时硬满仓。
 - **订单计划（`live.order_builder`）**：回测结束后，可把最近一期 `rebalance_log` 中的 `picks/weights` 视为目标权重，再结合当前持仓、现金 / 总资产和最新价格，生成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。该层只做订单计划，不做券商下单、不做成交回报。
-- **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
+- **订单预检查（`live.order_precheck`）**：订单计划生成后，检查买单现金是否足够、卖单可用股数是否足够、买入股数是否满足一手约束、订单金额是否过小、是否命中风险黑名单，以及停牌 / 涨停买入 / 跌停卖出是否应阻断。输出 `PASS` / `BLOCK` 与原因，不修改订单、不模拟成交。
+- **风险预警与黑名单（`live.risk_blacklist`）**：默认读取 `data/risk_blacklist.csv`，也可通过 `--risk-blacklist` 指定 CSV/XLSX。有效黑名单会进入订单预检查，命中后默认阻断买卖，并在命令摘要和纸面交易日报中展示风险等级、原因、来源和有效期。
+- **真实公告数据源（`live.announcement_source`）**：`scripts/fetch_tushare_announcements.py` 可从股票池或显式代码列表拉取 Tushare 公告，并保存成统一 `announcement_events.csv`。这一层只解决“公告从哪里来、怎么落表”，不直接决定买卖。
+- **公告事件风险过滤（`live.event_risk_filter`）**：从公告事件表中识别问询、处罚、立案、诉讼、退市风险等负面事件，生成 `BLACKLIST/WATCH` 风险候选；`scripts/build_event_risk_filter.py` 可把候选导出成 `risk_blacklist_<date>.csv`，再交给日终纸面交易的 `--risk-blacklist` 使用。
+- **负面舆情过滤（`live.negative_sentiment_filter`）**：读取外部新闻 / 舆情 CSV/XLSX，优先使用已有情绪分，没有情绪分时用负面关键词生成保守分数，再输出 `BLACKLIST/WATCH` 候选；`scripts/build_negative_sentiment_filter.py` 可导出黑名单文件接入订单预检查。
 - **统一券商接口（`live.broker` + `live.broker_factory`）**：`live.broker` 定义 `BrokerAdapter` 协议和 `BrokerAccount` / `BrokerPosition` / `BrokerOrder` 数据结构，让上层只关心查资金、查持仓、查订单、下单和撤单。`SimulatedBroker` 用同一协议做立即成交模拟；`RealBrokerReadOnlyAdapter` 固定只读，可查询账户、持仓和订单快照，但会阻断下单和撤单；`live.broker_factory.create_broker_adapter` 根据 `broker_mode/broker_provider` 创建模拟或只读 Adapter，并为未来 QMT、PTrade、掘金 Adapter 提供统一注册入口。
 - **纸面 / 真实账户只读对账（`live.broker_reconcile`）**：读取纸面账户状态，再通过只读 `BrokerAdapter` 读取真实账户快照，比较现金、总资产、持仓股数和可用股数差异。该层只输出 CSV / Markdown 对账报告，不下单、不撤单。
 - **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
 - **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
 - **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、执行模式选择、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。默认 `execution_mode="paper_trading"` 沿用旧纸面成交；切到 `execution_mode="simulated_broker"` 时，订单会先进入 `SimulatedBroker`，再转换为兼容的 `paper_trades`，让日报和账户状态继续复用。
-- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--factor-decay-monitor`、`--style-exposure`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
-- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、因子健康与失效监控、组合风格暴露、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
+- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--risk-blacklist`、`--factor-decay-monitor`、`--style-exposure`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。
+- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、因子健康与失效监控、增强因子健康总览、组合风格暴露、风险黑名单、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
+- **增强因子健康日报（`live.factor_health_report`）**：默认读取 `output/factor_validation/factor_decay_monitor.csv`、`rolling_out_of_sample_summary.csv`、`output/factor_diagnostics/factor_selection_summary.csv`、`factor_redundancy_report.csv`、`factor_weight_stability_summary.csv`、`factor_weight_drift_events.csv` 和 `output/market_regime/strategy_regime_summary.csv`，压缩成因子入选、样本外失效、滚动样本外、权重漂移、因子冗余、牛熊市分段六类状态。它只做展示和提示，不改变订单。
 - **风格暴露日报接入（`live.style_exposure_monitor`）**：默认读取 `output/factor_diagnostics/style_exposure.csv`，根据当前策略和运行日取最近一期目标组合风格暴露，并写入命令摘要和 Markdown 日报。它只做监控展示，不改变选股、配权或订单。
 - **小资金人工确认实盘单（`live.manual_confirmation`）**：默认随日终脚本生成 CSV 和 Markdown，路径为 `output/live_orders/<strategy>/<date>_manual_confirm.csv/.md`。确认单包含订单建议、预检查结果、可选因子健康状态和人工回填字段；它只辅助人工下单，不触发真实交易。
 - **真实成交回填与执行偏差分析（`live.execution_feedback`）**：人工在券商终端执行之后，把 `executed_qty`、`executed_price`、`operator`、`confirmed_at`、`execution_note` 回填到确认单，再运行 `scripts/build_execution_feedback.py`。输出路径为 `output/execution_feedback/<strategy>/`，用于统计 `FILLED/PARTIAL/OVERFILLED/NOT_EXECUTED/BLOCKED`、数量差异、金额差异和价格滑点。
@@ -286,12 +301,14 @@ flowchart TB
 - **因子清洗与标准化**：`factors.preprocess` 对每个交易日、每列因子做横截面 winsorize 与 z-score，缓存到 `factor_panel_zscore.csv`；单因子排序仍可用原始因子，多因子融合复用同一套 z-score 口径。
 - **质量、成长与现金流因子**：`factors.factor_finance` 将毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理和经营现金流质量按 `ann_date` 对齐到交易日；只使用当时已经公告的数据，避免把未来财报提前放进回测。
 - **机器学习打分因子（`ML_SCORE`）**：`factors.factor_ml` 用基础因子作为特征，用未来 `ml_score_forward_days` 日收益作为标签，按时间滚动训练梯度提升类模型。预测日 `t` 的训练样本只允许使用 `feature_date + forward_days <= t` 的历史样本，避免标签泄漏。`ML_SCORE` 只是候选因子，仍需经过 IC、分组收益、样本外验证和回测。
+- **公告事件因子（`ANNOUNCEMENT_EVENT_SCORE`）**：`factors.factor_events` 默认读取 `data/announcement_events.csv` 或环境变量 `QUANT_ANNOUNCEMENT_EVENT_PATH` 指定的 CSV/XLSX。事件表至少需要股票代码和公告日期；若有 `event_score` 就直接使用，若没有则用公告标题关键词给粗略正负分，再按 `Settings.announcement_event_effective_days` 向后衰减。`live.announcement_source` 可以从真实公告源生成同一格式文件；该因子仍是可检验候选因子，不等同于已经接入完整新闻源。
 - **因子多头超额**：`analysis.factor_diagnostics` 不做复杂配权、不计交易成本，只看某个因子 Top-K 等权多头腿相对股票池等权基准的主动收益；它是判断“因子有没有多头解释力”的中间层，不替代完整回测。
 - **分组收益与单调性**：同一诊断层还会把每个调仓日的股票按因子从低到高分成 `Settings.factor_group_count` 组，计算每组到下一调仓日的平均收益。`top_minus_bottom_*` 看高分组减低分组，`monotonicity_score` 看长期分组均值是否随因子分数升高而递增。
 - **多因子权重建议与验证**：`models.factor_weighting` 将 `mean_ic`、`ic_ir`、正 IC 占比、rolling IC、Top-Bottom 与单调性转成 `factor_score` 和 `fusion_weight`。全样本 `factor_weight_summary.csv` 用于诊断审计；训练段 `factor_weight_train_summary.csv` 会被 `fuse_static_weight_zscore` 固定成 `FUSED_SCORE_WEIGHTED`；滚动日志 `rolling_factor_weight_log.csv` 记录每个调仓日前的历史窗口、raw/constrained/final 权重和 fallback 原因，并生成 `FUSED_ROLLING_SCORE_WEIGHTED`；`analysis.factor_weight_stability` 再把滚动日志压缩成权重稳定性、漂移事件和组合层主导因子，判断权重是否在乱跳。
 - **样本外验证与因子失效监控**：`analysis.factor_validation` 使用和因子诊断相同的 IC、多头超额、分组收益口径，但按时间切成训练段和验证段。`out_of_sample_validation.csv` 看指标有没有从训练期掉到样本外；`factor_decay_monitor.csv` 把结果压缩成 `OK/WATCH/DEGRADED/FAILED`；`rolling_out_of_sample_validation.csv` 和 `rolling_out_of_sample_summary.csv` 进一步用多个训练/验证窗口观察因子跨时间是否稳定。
 - **多股票池验证**：`analysis.multi_universe_validation` 不重新计算因子，也不重新撮合交易，而是读取多个已经完成的 `output` 目录，例如 A50、光模块 / PCB、CCL / MLCC，汇总 `performance_summary.csv` 和 `factor_diagnostics/long_excess_summary.csv`。它回答的是横向问题：同一策略或因子在不同股票池里是否都站得住；如果只在一个池子有效，就不能直接当成稳健 alpha。
 - **参数敏感性分析**：`analysis.parameter_sensitivity` 复用已有价格和标准化因子缓存，在 baseline 附近一次只改一个参数，例如 `top_k`、调仓频率、配权方式、单票上限、换手上限、波动率目标和最小持仓规则。它不负责找“最优参数”，而是观察策略是否对某个精确参数过度依赖。
+- **牛熊市分段表现**：`analysis.market_regime` 用股票池等权基准定义市场状态，而不是用策略自身净值定义环境。默认按过去 60 日基准收益和当前回撤把交易日标记为 `BULL/BEAR/SIDEWAYS`，再计算每条策略在不同市场环境下的收益、超额、信息比率和最大回撤。
 - **因子入选与剔除机制**：`analysis.factor_selection` 汇总因子覆盖率、综合评分和失效监控，输出 `factor_selection_summary.csv`，把每个因子标记为 `PASS/WATCH/REJECT`。主融合候选池优先使用 `PASS` 因子；如果没有 `PASS`，回退 `WATCH`；如果仍为空，才回退原始因子池。单因子回测仍保留所有因子，便于持续观察。
 - **因子相关性与冗余分析**：`analysis.factor_redundancy` 按交易日计算因子横截面相关性，再对每日相关性取平均，输出 `factor_correlation_matrix.csv`、`factor_correlation_days.csv` 和 `factor_redundancy_report.csv`。若两个主融合候选因子高度相关，会优先保留准入状态更好、`factor_score` 更高的因子，另一个只保留研究诊断，不默认进入主融合。
 - **因子分层与复合因子体系**：`analysis.factor_composite` 将准入并去冗余后的原始因子按风格层合成 `PRICE_VOLUME_STYLE`、`VALUE_STYLE`、`QUALITY_STYLE`、`GROWTH_STYLE`、`CASHFLOW_STYLE`、`ML_STYLE` 等复合分数。主融合优先使用这些风格层；若复合层为空，则回退去冗余后的原始因子池。
@@ -374,6 +391,10 @@ flowchart TB
 | `output/multi_universe_validation/factor_universe_robustness.csv` | 多股票池因子稳健性汇总，统计正超额池占比、平均信息比率和 ROBUST / WATCH / UNSTABLE 状态 |
 | `output/parameter_sensitivity/parameter_sensitivity_detail.csv` | 参数敏感性逐变体明细，包含参数取值、收益、超额、回撤、换手和集中度 |
 | `output/parameter_sensitivity/parameter_sensitivity_summary.csv` | 参数敏感性按参数汇总，给出平均表现、最差表现、正超额比例和 ROBUST / WATCH / UNSTABLE 状态 |
+| `output/market_regime/market_regime_frame.csv` | 每个交易日的股票池等权基准净值、滚动收益、回撤和 BULL / BEAR / SIDEWAYS 标签 |
+| `output/market_regime/market_regime_days.csv` | 各市场状态覆盖天数、起止日期和占比 |
+| `output/market_regime/strategy_regime_performance.csv` | 每条策略在各市场状态下的收益、超额、信息比率和最大回撤 |
+| `output/market_regime/strategy_regime_summary.csv` | 每条策略跨市场状态的摘要和 ROBUST / WATCH / UNSTABLE 状态 |
 | `output/performance_summary.csv` | 各策略绩效汇总：`strategy`, `ann_return`, `ann_vol`, `sharpe`, `max_drawdown`，以及相对基准、换手成本和集中度指标 |
 | `output/rebalance_logs/<strategy>.csv` | 各策略逐次调仓明细：`date`, `symbol`, `weight`, `weighting`, `rank`，以及 `target_turnover`、`turnover_capped`、行业上限、波动率目标、最小持仓检查、现金目标仓位、流动性过滤前后候选数量等 |
 | `output/decision_logs/<strategy>.csv` | 各策略逐股票决策审计：因子分数/排名、是否通过流动性过滤、是否入选、行业、上期/目标/最终权重、动作与原因标签 |

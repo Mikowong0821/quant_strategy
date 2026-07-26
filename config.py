@@ -25,6 +25,7 @@ class Settings:
     stock_pool_code_col: str = "股票代码"
     tushare_price_cache_path: Path | None = None
     fina_indicator_cache_path: Path | None = None
+    announcement_event_path: Path | None = None
     price_col: str = "close"
     commission_rate: float = 0.0003
     rebalance_freq: str = "ME"
@@ -39,6 +40,8 @@ class Settings:
     volume_ratio_window: int = 20
     vol_window: int = 20
     fina_history_years: int = 2
+    # 公告事件因子：从本地 CSV/XLSX 读取事件，按公告日向后衰减成日频事件分数。
+    announcement_event_effective_days: int = 20
     persist_run_outputs: bool = True
     # 机器学习打分因子：用已有因子面板预测未来收益，输出 ML_SCORE；只作为候选因子进入 IC/回测。
     enable_ml_score: bool = True
@@ -69,6 +72,11 @@ class Settings:
     rolling_oos_validation_days: int = 40
     rolling_oos_step_days: int = 40
     rolling_oos_min_validation_days: int = 20
+    # 牛熊市分段：用股票池等权基准的滚动收益和回撤识别 BULL / BEAR / SIDEWAYS。
+    market_regime_lookback_days: int = 60
+    market_regime_bull_return_threshold: float = 0.10
+    market_regime_bear_return_threshold: float = -0.10
+    market_regime_bear_drawdown_threshold: float = -0.15
     # 综合评分滚动融合：每个调仓日前只用历史窗口计算因子权重，再用于当期 FUSED_ROLLING_SCORE_WEIGHTED。
     rolling_factor_weight_lookback_days: int = 120
     rolling_factor_weight_min_days: int = 60
@@ -123,6 +131,8 @@ def get_settings() -> Settings:
     tushare_cache = Path(cache_env).expanduser() if cache_env else data_dir / "prices_tushare_cache.csv"
     fina_cache_env = os.environ.get("QUANT_TUSHARE_FINA_CACHE", "").strip()
     fina_cache = Path(fina_cache_env).expanduser() if fina_cache_env else None
+    event_env = os.environ.get("QUANT_ANNOUNCEMENT_EVENT_PATH", "").strip()
+    announcement_event_path = Path(event_env).expanduser() if event_env else data_dir / "announcement_events.csv"
     start = os.environ.get("QUANT_BACKTEST_START", "").strip() or Settings.backtest_start
     end = os.environ.get("QUANT_BACKTEST_END", "").strip() or Settings.backtest_end
     broker_mode = os.environ.get("QUANT_BROKER_MODE", "").strip() or Settings.broker_mode
@@ -147,6 +157,7 @@ def get_settings() -> Settings:
         stock_pool_path=stock_pool_path,
         tushare_price_cache_path=tushare_cache,
         fina_indicator_cache_path=fina_cache,
+        announcement_event_path=announcement_event_path,
         backtest_start=start,
         backtest_end=end,
         force_final_rebalance=force_final_rebalance,

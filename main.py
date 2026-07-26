@@ -63,6 +63,13 @@ from analysis.ic import (
     save_ic_series,
     summarize_ic,
 )
+from analysis.market_regime import (
+    build_market_regime_frame,
+    save_market_regime_outputs,
+    strategy_regime_performance,
+    summarize_regime_days,
+    summarize_strategy_regime_robustness,
+)
 from analysis.performance import summarize
 from analysis.plotting import (
     plot_effective_n,
@@ -1578,6 +1585,10 @@ def main() -> None:
             print("【风格暴露】跳过: %s\n" % e)
 
     benchmark_nav: pd.Series | None = None
+    market_regime_frame = pd.DataFrame()
+    market_regime_days = pd.DataFrame()
+    market_regime_detail = pd.DataFrame()
+    market_regime_summary = pd.DataFrame()
     if nav_curves:
         try:
             nav_index = pd.DataFrame(nav_curves).index
@@ -1623,6 +1634,67 @@ def main() -> None:
                         )
                     )
                 print()
+                market_regime_frame = build_market_regime_frame(
+                    benchmark_nav,
+                    lookback_days=settings.market_regime_lookback_days,
+                    bull_return_threshold=settings.market_regime_bull_return_threshold,
+                    bear_return_threshold=settings.market_regime_bear_return_threshold,
+                    bear_drawdown_threshold=settings.market_regime_bear_drawdown_threshold,
+                )
+                market_regime_days = summarize_regime_days(market_regime_frame)
+                market_regime_detail = strategy_regime_performance(
+                    nav_curves,
+                    benchmark_nav,
+                    market_regime_frame,
+                    periods=settings.trading_days_per_year,
+                )
+                market_regime_summary = summarize_strategy_regime_robustness(
+                    market_regime_detail
+                )
+                if not market_regime_days.empty:
+                    print("========== 四A、牛熊市分段表现 ==========\n")
+                    print("【市场状态覆盖】")
+                    for rec in market_regime_days.to_dict("records"):
+                        print(
+                            "  %s: %d 天，占比 %.2f%%"
+                            % (
+                                rec["regime"],
+                                int(rec["n_days"]),
+                                float(rec["day_ratio"]) * 100.0,
+                            )
+                        )
+                    if not market_regime_summary.empty:
+                        print("【策略分段摘要】")
+                        for rec in market_regime_summary.head(8).to_dict("records"):
+                            print(
+                                "  %s status=%s bull_excess=%s bear_excess=%s sideways_excess=%s"
+                                % (
+                                    rec["strategy"],
+                                    rec["status"],
+                                    "nan"
+                                    if pd.isna(rec["bull_excess_ann_return"])
+                                    else "%.4f" % float(rec["bull_excess_ann_return"]),
+                                    "nan"
+                                    if pd.isna(rec["bear_excess_ann_return"])
+                                    else "%.4f" % float(rec["bear_excess_ann_return"]),
+                                    "nan"
+                                    if pd.isna(rec["sideways_excess_ann_return"])
+                                    else "%.4f" % float(rec["sideways_excess_ann_return"]),
+                                )
+                            )
+                    print()
+                if settings.persist_run_outputs and not market_regime_frame.empty:
+                    paths = save_market_regime_outputs(
+                        settings.output_dir / "market_regime",
+                        market_regime_frame,
+                        market_regime_days,
+                        market_regime_detail,
+                        market_regime_summary,
+                    )
+                    print(
+                        "牛熊市分段报告已保存: %s\n"
+                        % ", ".join("%s=%s" % (k, v.resolve()) for k, v in paths.items())
+                    )
             else:
                 print("【基准】跳过: 股票池等权基准为空\n")
         except Exception as e:

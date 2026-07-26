@@ -13,6 +13,10 @@ from typing import Any, Sequence
 import pandas as pd
 
 from config import Settings, get_settings
+from live.factor_health_report import (
+    build_factor_health_report,
+    summarize_factor_health_report,
+)
 from live.paper_guard import (
     DailyPaperGuardError,
     format_guard_issues,
@@ -33,6 +37,12 @@ from live.manual_confirmation import (
 )
 from live.paper_runner import run_daily_paper_trade
 from live.paper_report import save_daily_paper_report
+from live.risk_blacklist import (
+    active_risk_blacklist,
+    default_risk_blacklist_path,
+    load_risk_blacklist,
+    summarize_risk_blacklist_for_report,
+)
 from live.style_exposure_monitor import (
     latest_style_exposure_for_strategy,
     load_style_exposure,
@@ -171,6 +181,7 @@ def run_daily_paper_from_outputs(
     generate_manual_confirmation: bool = True,
     factor_decay_monitor_path: Path | None = None,
     style_exposure_path: Path | None = None,
+    risk_blacklist_path: Path | None = None,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -200,6 +211,8 @@ def run_daily_paper_from_outputs(
         )
     target_date, target_weights = load_latest_target_weights(rebalance_path, trade_date=run_date)
     trade_status = load_trade_status(trade_status_path, trade_date=run_date)
+    blacklist_path = risk_blacklist_path if risk_blacklist_path is not None else default_risk_blacklist_path(settings)
+    risk_blacklist = active_risk_blacklist(load_risk_blacklist(blacklist_path), trade_date=run_date)
     guard_issues = (
         validate_daily_inputs(
             target_weights=target_weights,
@@ -221,6 +234,7 @@ def run_daily_paper_from_outputs(
         latest_prices=latest_prices,
         trade_date=run_date,
         trade_status=trade_status,
+        risk_blacklist=risk_blacklist,
         persist_outputs=persist_outputs,
         execution_mode=execution_mode,
     )
@@ -228,6 +242,7 @@ def run_daily_paper_from_outputs(
         "rebalance_log": rebalance_path,
         "prices": price_cache_path,
         "trade_status": trade_status_path,
+        "risk_blacklist": blacklist_path if blacklist_path.exists() else None,
     }
     result["target_date"] = target_date
     result["price_date"] = price_date
@@ -244,6 +259,8 @@ def run_daily_paper_from_outputs(
         strategy=strategy,
         trade_date=run_date,
     )
+    result["factor_health_report"] = build_factor_health_report(settings, strategy=strategy)
+    result["risk_blacklist"] = risk_blacklist
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
         result.setdefault("paths", {})["paper_report"] = report_path
@@ -267,6 +284,8 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     guard_issues = result.get("guard_issues", [])
     factor_monitor = result.get("factor_decay_monitor")
     style_exposure = result.get("style_exposure")
+    factor_health_report = result.get("factor_health_report")
+    risk_blacklist = result.get("risk_blacklist")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -315,6 +334,10 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
         lines.append("factor_health=%s reason=%s" % (factor_status, factor_reasons))
     style_status, style_reason = summarize_style_exposure_for_report(style_exposure)
     lines.append("style_exposure=%s detail=%s" % (style_status, style_reason))
+    health_status, health_reason = summarize_factor_health_report(factor_health_report)
+    lines.append("enhanced_factor_health=%s detail=%s" % (health_status, health_reason))
+    blacklist_status, blacklist_reason = summarize_risk_blacklist_for_report(risk_blacklist)
+    lines.append("risk_blacklist=%s detail=%s" % (blacklist_status, blacklist_reason))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))
@@ -342,6 +365,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="风格暴露 CSV；默认 output/factor_diagnostics/style_exposure.csv",
+    )
+    parser.add_argument(
+        "--risk-blacklist",
+        type=Path,
+        default=None,
+        help="风险黑名单 CSV/XLSX；默认 data/risk_blacklist.csv，文件不存在则视为无黑名单",
     )
     parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
     parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
@@ -378,6 +407,7 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             generate_manual_confirmation=not args.no_manual_confirm,
             factor_decay_monitor_path=args.factor_decay_monitor,
             style_exposure_path=args.style_exposure,
+            risk_blacklist_path=args.risk_blacklist,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
         print(str(exc), file=sys.stderr)

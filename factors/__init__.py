@@ -5,6 +5,11 @@ from __future__ import annotations
 
 from typing import Callable, Dict
 
+from factors.factor_events import (
+    ANNOUNCEMENT_EVENT_SCORE,
+    calc_announcement_event_score,
+    load_announcement_events,
+)
 from factors.factor_finance import (
     calc_gross_margin,
     calc_low_debt_to_assets,
@@ -36,7 +41,9 @@ __all__ = [
     "DEFAULT_FACTOR_ORDER",
     "build_four_factor_panel",
     "ML_SCORE_NAME",
+    "ANNOUNCEMENT_EVENT_SCORE",
     "build_ml_score_factor",
+    "calc_announcement_event_score",
     "calc_momentum",
     "calc_gross_margin",
     "calc_low_debt_to_assets",
@@ -49,4 +56,5 @@ __all__ = [
     "calc_volume_ratio",
     "calc_volatility",
     "forward_return_label",
+    "load_announcement_events",
 ]

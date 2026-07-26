@@ -192,6 +192,42 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("- 主导风格：`QUALITY_STYLE`", report)
             self.assertIn("| 2024-01-31 | QUALITY_STYLE | 0.8000 |", report)
 
+    def test_report_includes_enhanced_factor_health_report(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["factor_health_report"] = pd.DataFrame(
+                [
+                    {
+                        "category": "滚动样本外",
+                        "status": "UNSTABLE",
+                        "summary": "滚动窗口不稳定因子=1/2",
+                        "detail": "UNSTABLE=1/2",
+                        "action": "连续多个窗口不稳定的因子不进入主融合",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 增强因子健康总览", report)
+            self.assertIn("- 整体状态：`UNSTABLE`", report)
+            self.assertIn("| 滚动样本外 | UNSTABLE | 滚动窗口不稳定因子=1/2 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

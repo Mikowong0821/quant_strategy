@@ -10,6 +10,11 @@ import pandas as pd
 
 from backtest.backtest_utils import long_to_wide, prices_to_wide_close, to_returns, wide_to_long
 from config import Settings
+from factors.factor_events import (
+    ANNOUNCEMENT_EVENT_SCORE,
+    calc_announcement_event_score,
+    load_announcement_events,
+)
 from factors.factor_finance import (
     calc_cash_profit_quality,
     calc_free_cash_flow_yield,
@@ -42,6 +47,7 @@ DEFAULT_FACTOR_ORDER = [
     "PROFIT_GROWTH",
     "FREE_CASH_FLOW_YIELD",
     "CASH_PROFIT_QUALITY",
+    ANNOUNCEMENT_EVENT_SCORE,
 ]
 
 
@@ -165,6 +171,18 @@ def build_four_factor_panel(
         free_cash_flow_yield = _safe_finance_factor(calc_free_cash_flow_yield, fina, long_px, idx)
         cash_profit_quality = _safe_finance_factor(calc_cash_profit_quality, fina, long_px, idx)
 
+    try:
+        event_path = getattr(settings, "announcement_event_path", None)
+        events = load_announcement_events(event_path)
+        event_score = calc_announcement_event_score(
+            events,
+            long_px,
+            effective_days=int(getattr(settings, "announcement_event_effective_days", 20)),
+        ).reindex(idx)
+    except Exception as exc:
+        print("公告事件因子加载失败，将为空:", exc)
+        event_score = pd.Series(index=idx, dtype=float)
+
     panel = pd.concat(
         {
             "MOMENTUM": mom,
@@ -181,6 +199,7 @@ def build_four_factor_panel(
             "PROFIT_GROWTH": profit_growth,
             "FREE_CASH_FLOW_YIELD": free_cash_flow_yield,
             "CASH_PROFIT_QUALITY": cash_profit_quality,
+            ANNOUNCEMENT_EVENT_SCORE: event_score,
         },
         axis=1,
     )

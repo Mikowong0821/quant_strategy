@@ -178,6 +178,52 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertIn("## 组合风格暴露", report)
             self.assertIn("| 2024-01-31 | PRICE_VOLUME_STYLE | 1.2500 |", report)
 
+    def test_run_from_outputs_adds_risk_blacklist_to_report_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            settings.data_dir.mkdir(parents=True)
+            blacklist_path = settings.data_dir / "risk_blacklist.csv"
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": "AAA",
+                        "name": "测试股票",
+                        "severity": "HIGH",
+                        "reason": "manual_risk_review",
+                        "active": True,
+                    }
+                ]
+            ).to_csv(blacklist_path, index=False)
+
+            result = run_daily_paper_from_outputs(settings, strategy="TEST")
+            summary = format_daily_paper_summary(result)
+            report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
+            report = report_path.read_text(encoding="utf-8")
+
+            self.assertIn("risk_blacklist=WATCH", summary)
+            self.assertIn("block=1", summary)
+            self.assertIn("risk_blacklist", str(result["order_checks"].loc[0, "check_reason"]))
+            self.assertIn("## 风险预警与黑名单", report)
+            self.assertIn("| AAA | 测试股票 | HIGH | manual_risk_review |", report)
+
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(

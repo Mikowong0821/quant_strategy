@@ -30,6 +30,7 @@ flowchart LR
   paper[live/paper_trading]
   state[live/account_state]
   runner[live/paper_runner]
+  health[live/factor_health_report]
   confirm[live/manual_confirmation]
   feedback[live/execution_feedback]
   guard[live/paper_guard]
@@ -54,6 +55,8 @@ flowchart LR
   fac --> dq
   fac --> diag
   fac --> val
+  diag --> health
+  val --> health
   opt --> bt
   bt --> perf
   bt --> bench
@@ -79,6 +82,7 @@ flowchart LR
   control --> runner
   guard --> runner
   scheduler --> cli
+  health --> cli
   runner --> guard
   runner --> order
   cli --> runner
@@ -124,11 +128,12 @@ flowchart LR
 | `factor_pe.py` | **市盈率类因子**：需要行情与财报字段对齐，输出长表。 |
 | `factor_roe.py` | **ROE 类因子**：依赖财务表与报告期/公告日规则，输出长表。 |
 | `factor_finance.py` | **质量、成长与现金流类财务因子**：毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量；按公告日向后对齐，避免未来函数。 |
+| `factor_events.py` | **公告事件因子**：读取本地公告事件 CSV/XLSX，支持中文列名和显式 `event_score`，没有分数字段时用标题关键词生成粗略正负分，并按公告日向后衰减成 `ANNOUNCEMENT_EVENT_SCORE`。 |
 | `factor_ml.py` | **机器学习打分因子**：用已有因子面板滚动训练梯度提升类模型，预测未来收益并输出 `ML_SCORE`；只作为候选因子进入 IC、分组收益、样本外验证和回测。 |
 | `preprocess.py` | **因子清洗与标准化**：按交易日横截面做 winsorize、z-score，也支持行业内 z-score；行业样本不足时回退全截面结果。主流程默认用标准化后的研究面板进入 IC、诊断和回测。 |
 
 **本层不负责**仓位、手续费、优化；只负责「在合法信息集下算出每个 `(date, symbol)` 上的因子值」。  
-新增因子时：新建模块实现 `calc_xxx`。若要支持 `run_single_backtest("NAME")` 自动重算，需要在 `FACTOR_REGISTRY` 注册；若像质量 / 成长 / 现金流财务因子一样依赖财务表与行情长表共同对齐，也可以先通过 `panel_builder` 统一生成，再由 `main` 以预计算 `factor_values` 传入回测。`ML_SCORE` 属于二阶因子：它依赖基础因子面板训练得到，因此在 `main` 中基础面板生成后追加。
+新增因子时：新建模块实现 `calc_xxx`。若要支持 `run_single_backtest("NAME")` 自动重算，需要在 `FACTOR_REGISTRY` 注册；若像质量 / 成长 / 现金流财务因子、公告事件因子一样依赖外部表与行情长表共同对齐，也可以先通过 `panel_builder` 统一生成，再由 `main` 以预计算 `factor_values` 传入回测。`ML_SCORE` 属于二阶因子：它依赖基础因子面板训练得到，因此在 `main` 中基础面板生成后追加。
 
 ---
 
@@ -183,29 +188,37 @@ flowchart LR
 | `cache_io.py` | **缓存与实验记录**：保存行情长表、收盘价宽表、因子面板、数据质量报告、因子诊断、训练段权重、滚动权重日志、运行配置、绩效汇总、调仓日志、换手日志、订单计划、订单预检查结果、纸面交易日志、集中度日志等，形成可复现实验档案。 |
 | `account_state.py` | **纸面账户状态**：保存 / 读取虚拟账户现金、持仓和每日快照，让纸面交易可以跨天连续运行。 |
 | `order_builder.py` | **订单生成**：把目标权重、当前持仓、现金 / 总资产和最新价格转换成 `BUY/SELL`、目标股数、调整股数、预估金额与交易原因。只生成订单计划，不连接券商、不模拟成交。 |
-| `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌和涨跌停约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
+| `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌、涨跌停和风险黑名单约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
+| `risk_blacklist.py` | **风险预警与黑名单**：读取 CSV/XLSX、DataFrame、字典或代码列表，标准化 `symbol/reason/severity/source/active/created_at/expires_at`，并把当前有效黑名单交给订单预检查和纸面交易日报。 |
+| `announcement_source.py` | **真实公告数据源**：把 Tushare 公告接口返回值统一成 `announcement_events.csv`，让公告事件因子和公告风险过滤都复用同一张事件表。 |
+| `event_risk_filter.py` | **公告事件风险过滤**：从公告事件表中识别问询、处罚、立案、诉讼、退市风险等负面事件，生成 `BLACKLIST/WATCH` 风险候选，并可转换为黑名单文件。 |
+| `negative_sentiment_filter.py` | **负面舆情过滤**：读取外部新闻 / 舆情 CSV/XLSX，按情绪分或负面关键词生成 `BLACKLIST/WATCH` 风险候选，并可转换为黑名单文件。 |
 | `broker.py` | **统一券商接口协议**：定义 `BrokerAdapter`、`BrokerAccount`、`BrokerPosition`、`BrokerOrder`、`SimulatedBroker` 与 `RealBrokerReadOnlyAdapter`，把查资金、查持仓、查订单、下单、撤单抽象成统一方法。模拟券商用于验证协议；真实券商先用只读 adapter 验证账户、持仓和订单读取。 |
 | `broker_factory.py` | **券商通道选择入口**：根据 `broker_mode/broker_provider/account_id` 创建模拟或只读 Adapter；后续 QMT、PTrade、掘金接入都应注册到这一层，真实交易模式当前明确阻断。 |
 | `broker_reconcile.py` | **纸面 / 真实账户只读对账**：比较纸面账户与只读券商账户的现金、总资产、持仓股数和可用股数差异，输出账户差异、持仓差异和 Markdown 对账报告。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
 | `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、执行模式选择、成交回报兼容、持仓更新、账户快照和落盘；默认走旧纸面成交，也可通过 `simulated_broker` 走统一券商接口。 |
-| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子健康状态、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
+| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子失效监控、增强因子健康总览、风格暴露、风险黑名单、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
+| `factor_health_report.py` | **增强因子健康总览**：读取样本外失效、滚动样本外、因子准入、冗余、权重漂移和牛熊市分段 CSV，压缩成日终纸面交易日报可读的健康摘要；只展示，不重新计算研究指标。 |
 | `manual_confirmation.py` | **小资金人工确认实盘单**：基于订单计划、预检查和可选因子失效监控生成 CSV / Markdown 确认单，预留真实执行回填字段；只辅助人工下单，不自动连接券商。 |
 | `execution_feedback.py` | **真实成交回填与执行偏差分析**：读取人工确认单中的真实成交回填字段，对比系统建议数量、价格、金额和实际执行结果，输出逐笔偏差、成交状态和汇总报告。 |
 | `paper_guard.py` | **运行失败 / 异常检查**：在日终纸面运行前后检查目标权重、价格、日期、现金、持仓、订单检查和成交日志；ERROR 阻断，WARNING 进入摘要和日报。 |
 | `paper_run_control.py` | **交易日日历 / 重复运行保护**：从价格缓存提取交易日日历，默认阻断非交易日运行；检查同日纸面账户快照，默认阻断重复覆盖。 |
 | `paper_scheduler.py` | **每日调度封装**：运行一次日终纸面交易并记录 stdout、stderr、参数和退出码，供 cron / launchd / 服务器调度器调用。 |
-| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报；支持 `--execution-mode simulated_broker`。 |
+| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报、增强因子健康总览和风险黑名单摘要；支持 `--risk-blacklist` 与 `--execution-mode simulated_broker`。 |
 
 ## 8.1 `scripts/`：日常运行入口
 
 | 文件 | 作用 |
 |------|------|
-| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--factor-decay-monitor`、`--execution-mode`、`--no-persist`、`--no-report`、`--no-manual-confirm`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
+| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--risk-blacklist`、`--factor-decay-monitor`、`--execution-mode`、`--no-persist`、`--no-report`、`--no-manual-confirm`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
 | `run_scheduled_daily_paper.py` | **每日调度入口**：薄命令行入口，调用 `live.paper_scheduler.run_scheduled_daily_paper`，把未识别参数透传给日终纸面交易 CLI，并写 `output/scheduler_logs/<date>.log`。 |
 | `reconcile_paper_broker.py` | **纸面 / 券商只读对账入口**：读取外部券商账户和持仓 CSV，构造只读 adapter，并与纸面账户状态生成差异报告。 |
 | `build_execution_feedback.py` | **真实成交回填入口**：读取人工确认单 CSV 中的 `executed_qty`、`executed_price` 等字段，生成执行偏差 CSV 与 Markdown 报告。 |
+| `fetch_tushare_announcements.py` | **真实公告源接入入口**：读取股票池或显式股票代码，从 Tushare 拉取公告并保存为统一事件表。 |
+| `build_event_risk_filter.py` | **公告事件风险过滤入口**：读取公告事件 CSV/XLSX，输出风险候选表，并可选导出日终纸面交易可读取的黑名单文件。 |
+| `build_negative_sentiment_filter.py` | **负面舆情过滤入口**：读取新闻 / 舆情 CSV/XLSX，输出负面风险候选表，并可选导出日终纸面交易可读取的黑名单文件。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 
@@ -231,7 +244,7 @@ flowchart LR
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
 7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
-8. `live/` → 数据接入、订单生成、订单预检查、券商通道选择、纸面交易、账户状态、每日纸面运行器、纸面交易日报、人工确认单、真实成交回填、运行异常检查、交易日日历 / 重复运行保护、每日调度封装与日终脚本辅助逻辑；信号生成仍是占位。
+8. `live/` → 数据接入、订单生成、订单预检查、券商通道选择、纸面交易、账户状态、每日纸面运行器、纸面交易日报、增强因子健康总览、人工确认单、真实成交回填、运行异常检查、交易日日历 / 重复运行保护、每日调度封装与日终脚本辅助逻辑；信号生成仍是占位。
 9. `scripts/` → 日常运行入口，例如日终纸面交易命令和真实成交回填报告命令。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。
