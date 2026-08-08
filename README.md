@@ -13,7 +13,7 @@
 | 行情接入（CSV / Tushare / 合成兜底）、多因子面板（量价 + 估值 + 质量 + 成长 + 现金流 + 公告事件）、横截面/行业内标准化、数据质量 / 覆盖率报告、IC 与可选 CSV/图、因子 Top-K 多头超额诊断、分组收益与单调性分析、多因子权重建议表、样本外验证与因子失效监控 | `live/signal_system.generate_signals`、真实券商 API |
 | 月末再平衡、Top-K、可交易性 / 流动性过滤、停牌 / 涨跌停交易约束、`portfolio_weighting`：`equal` / `max_sharpe` / `risk_parity`，`max_position_weight` 单票权重上限，`max_industry_weight` 行业权重上限，`target_volatility` 波动率目标与现金仓位，`min_positions` 最小持仓数量，`max_rebalance_turnover` 单次换手上限 | `fuse_models` 除 `mean_zscore` / `mean` 外的 `method`（如 `dynamic`、`xgboost`） |
 | 单因子回测 + **IC 驱动或等权** z-score 融合回测 + **训练段静态综合权重**验证回测 + **调仓日前滚动综合权重**回测、`meta["rebalance_log"]`、`meta["decision_log"]` | `main` 未接 `run_multi_backtest(factors, weights)` 原始因子线性加权入口（代码已有，非主流程） |
-| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/决策审计/换手/集中度日志 CSV、`persist_run_outputs` 落盘、`live.order_builder` 目标权重转订单计划、`live.order_precheck` 订单预检查、`live.risk_blacklist` 风险预警与黑名单阻断、`live.announcement_source` 真实公告数据源标准化、`live.event_risk_filter` 公告事件风险候选、`live.negative_sentiment_filter` 负面舆情风险候选、`live.paper_trading` 虚拟账户模拟成交、`live.account_state` 纸面账户状态持久化、`live.paper_runner` 单日纸面交易运行器、`scripts/run_daily_paper.py` 日终纸面交易脚本、`live.paper_report` 纸面交易日报、`live.factor_health_report` 增强因子健康总览、`live.manual_confirmation` 小资金人工确认实盘单、`live.execution_feedback` 真实成交回填与执行偏差分析、`live.paper_guard` 运行失败 / 异常检查、`live.paper_run_control` 交易日日历 / 重复运行保护、`scripts/run_scheduled_daily_paper.py` 每日调度入口、`live.broker` 统一券商接口协议与模拟券商适配器、真实券商只读 Adapter 骨架、日终纸面交易可通过 `--execution-mode simulated_broker` 走统一券商接口 | 真实券商交易 API、实时风控与订单路由 |
+| 绩效 `summarize`、股票池等权基准、超额收益 / 跟踪误差 / 信息比率、换手率与预估成本、HHI / effective_n 持仓集中度、净值/IC/权重/换手/集中度/覆盖率图、`performance_summary.csv`、`run_config.json`、调仓/决策审计/换手/集中度日志 CSV、`persist_run_outputs` 落盘、`live.order_builder` 目标权重转订单计划、`live.order_precheck` 订单预检查、`live.risk_blacklist` 风险预警与黑名单阻断、`live.risk_gate` 统一风险门禁、`live.announcement_source` 真实公告数据源标准化、`live.event_risk_filter` 公告事件风险候选、`live.negative_sentiment_filter` 负面舆情风险候选、`live.paper_trading` 虚拟账户模拟成交、`live.account_state` 纸面账户状态持久化、`live.paper_runner` 单日纸面交易运行器、`scripts/run_daily_paper.py` 日终纸面交易脚本、`live.paper_report` 纸面交易日报、`live.factor_health_report` 增强因子健康总览、`live.manual_confirmation` 小资金人工确认实盘单、`live.execution_feedback` 真实成交回填与执行偏差分析、`live.paper_guard` 运行失败 / 异常检查、`live.paper_run_control` 交易日日历 / 重复运行保护、`scripts/run_scheduled_daily_paper.py` 每日调度入口、`live.broker` 统一券商接口协议与模拟券商适配器、真实券商只读 Adapter 骨架、日终纸面交易可通过 `--execution-mode simulated_broker` 走统一券商接口 | 真实券商交易 API、实时风控与订单路由 |
 
 ## 文档
 
@@ -40,12 +40,12 @@ Token：优先环境变量 `TUSHARE_TOKEN`；未设置时使用 `config.py` 内 
 ```
 data/           # 原始/演示数据（如 prices_demo.csv、stock_pool.xlsx、本地行情缓存）
 output/         # 运行生成：nav_compare.png、excess_nav_compare.png、turnover_compare.png、performance_summary.csv、cache/、data_quality/、factor_diagnostics/、market_regime/、risk_exposure/ 等
-factors/        # 因子与 panel_builder
+factors/        # 因子与 panel_builder；factor_events 支持公告总分和公告类型分层因子
 backtest/       # backtest_single、backtest_multi、utils
 models/         # fusion、factor_weighting、optimizer
 analysis/       # performance、benchmark、turnover、risk_exposure、data_quality、factor_diagnostics、factor_validation、market_regime、plotting、ic
-live/           # data_feed、stock_pool、cache_io、order_builder、order_precheck、risk_blacklist、announcement_source、event_risk_filter、negative_sentiment_filter、paper_trading、broker、account_state、paper_runner、paper_report、factor_health_report、manual_confirmation、execution_feedback、paper_guard、paper_run_control、daily_paper_cli；signal 非 MVP 占位
-scripts/        # build_live_universe.py、fetch_tushare_announcements.py、build_event_risk_filter.py、build_negative_sentiment_filter.py、run_daily_paper.py、build_execution_feedback.py、run_scheduled_daily_paper.py 等日常运行入口
+live/           # data_feed、stock_pool、cache_io、order_builder、order_precheck、risk_blacklist、risk_gate、announcement_source、news_source、event_risk_filter、negative_sentiment_filter、paper_trading、broker、account_state、paper_runner、paper_report、factor_health_report、manual_confirmation、execution_feedback、paper_guard、paper_run_control、daily_paper_cli；signal 非 MVP 占位
+scripts/        # build_live_universe.py、fetch_tushare_announcements.py、fetch_akshare_stock_news.py、build_event_risk_filter.py、build_announcement_event_type_analysis.py、build_announcement_event_type_backtest.py、build_announcement_event_type_risk_filter_backtest.py、build_negative_sentiment_filter.py、run_daily_paper.py、build_execution_feedback.py、run_scheduled_daily_paper.py 等日常运行入口
 config.py
 main.py
 ```
@@ -59,7 +59,7 @@ python main.py
 ### 当前 `main.py` 实际顺序（与代码一致）
 
 1. **数据**：`data/prices_demo.csv` 优先；否则读取 Tushare 行情缓存；若缓存不存在，则从 `Settings.stock_pool_path` 指定的 Excel/CSV 股票池读取标的并拉取 Tushare 日线，同时写入 `Settings.tushare_price_cache_path`；若股票池不存在才使用 `main._DEFAULT_TS_SYMBOLS` 示例股票池；失败则合成宽表。得到 `prices`（宽表）与 `long_df`。
-2. **基础因子面板**：`factors.panel_builder.build_four_factor_panel`（历史命名保留；当前默认十五列：`MOMENTUM`、`MOMENTUM_60D`、`REVERSAL_5D`、`VOLATILITY`、`VOLUME_RATIO_20D`、`PE`、`ROE`、`GROSS_MARGIN`、`NET_MARGIN`、`LOW_DEBT_TO_ASSETS`、`REVENUE_GROWTH`、`PROFIT_GROWTH`、`FREE_CASH_FLOW_YIELD`、`CASH_PROFIT_QUALITY`、`ANNOUNCEMENT_EVENT_SCORE`）。公告事件因子默认读取 `data/announcement_events.csv`，文件不存在时该列为空。
+2. **基础因子面板**：`factors.panel_builder.build_four_factor_panel`（历史命名保留；当前默认十五列：`MOMENTUM`、`MOMENTUM_60D`、`REVERSAL_5D`、`VOLATILITY`、`VOLUME_RATIO_20D`、`PE`、`ROE`、`GROSS_MARGIN`、`NET_MARGIN`、`LOW_DEBT_TO_ASSETS`、`REVENUE_GROWTH`、`PROFIT_GROWTH`、`FREE_CASH_FLOW_YIELD`、`CASH_PROFIT_QUALITY`、`ANNOUNCEMENT_EVENT_SCORE`）。公告事件因子默认读取 `data/announcement_events.csv`，文件不存在时该列为空；`factors.factor_events.calc_announcement_event_type_scores` 可把同一公告表拆成回购、减持、问询处罚、分红、合同项目等类型分层因子，用于单独诊断或后续接入策略。
 3. **机器学习打分因子**：若 `enable_ml_score=True`，`factors.factor_ml.build_ml_score_factor` 用已有因子面板滚动训练梯度提升类模型，预测未来收益并追加 `ML_SCORE`；该列只作为候选因子进入后续 IC、分组收益、样本外验证和回测。
 4. **因子清洗与行业内标准化**：`factors.preprocess.preprocess_factor_panel` 默认读取 `industry_col` 行业字段，在同一交易日同一行业内做 winsorize + z-score；缺行业或行业样本少于 `factor_industry_min_count` 时回退全股票池横截面 z-score。原始 `factor_panel.csv` 保留审计，IC/诊断/回测使用标准化后的研究面板。
 5. **数据质量**：`analysis.data_quality` 输出价格覆盖、因子覆盖、调仓日覆盖报告；若 `persist_run_outputs`，保存到 `output/data_quality/`。
@@ -88,7 +88,7 @@ python main.py
 26. **纸面账户状态**：`live.account_state` 保存 / 读取纸面账户现金、持仓和每日快照，输出到 `output/paper_account/<strategy>/account.csv`、`positions.csv`、`snapshots.csv`。
 27. **每日纸面交易运行器**：`live.paper_runner.run_daily_paper_trade` 读取上一日纸面账户状态，串联订单生成、预检查、成交执行、持仓更新、账户快照和落盘，形成可每天调用一次的纸面交易入口。默认沿用 `paper_trading`，也可用 `execution_mode="simulated_broker"` 通过统一券商接口执行。
 28. **日终纸面交易脚本**：`scripts/run_daily_paper.py` 从 `output/rebalance_logs/<strategy>.csv` 读取最近一期目标权重，从 `output/cache/prices_wide_close.csv` 读取最新价格，调用每日纸面交易运行器并打印摘要。
-29. **纸面交易日报与增强因子健康总览**：`live.paper_report` 将单日纸面运行结果整理为 Markdown，默认写入 `output/paper_reports/<strategy>/<date>.md`，便于复盘每天买卖、阻断、成交、持仓、账户变化、因子失效监控、目标组合风格暴露、风险黑名单和增强因子健康总览；`live.factor_health_report` 会读取 `factor_decay_monitor.csv`、`rolling_out_of_sample_summary.csv`、`factor_selection_summary.csv`、`factor_redundancy_report.csv`、`factor_weight_stability_summary.csv`、`factor_weight_drift_events.csv`、`strategy_regime_summary.csv`，压缩成日终可读的健康摘要。
+29. **纸面交易日报与增强因子健康总览**：`live.paper_report` 将单日纸面运行结果整理为 Markdown，默认写入 `output/paper_reports/<strategy>/<date>.md`，便于复盘每天买卖、阻断、成交、持仓、账户变化、因子失效监控、目标组合风格暴露、统一风险门禁、风险黑名单和增强因子健康总览；`live.factor_health_report` 会读取 `factor_decay_monitor.csv`、`rolling_out_of_sample_summary.csv`、`factor_selection_summary.csv`、`factor_redundancy_report.csv`、`factor_weight_stability_summary.csv`、`factor_weight_drift_events.csv`、`strategy_regime_summary.csv`，压缩成日终可读的健康摘要。
 30. **小资金人工确认实盘单**：`live.manual_confirmation` 基于同一份订单计划和预检查结果生成 `output/live_orders/<strategy>/<date>_manual_confirm.csv/.md`，预留人工执行回填字段；该层只给建议，不自动下单。
 31. **真实成交回填与执行偏差分析**：`live.execution_feedback` 读取人工确认单中回填的 `executed_qty/executed_price`，比较建议订单和真实执行，输出 `output/execution_feedback/<strategy>/` 下的逐笔偏差、汇总和 Markdown 报告。
 32. **运行失败 / 异常检查**：`live.paper_guard` 在日终纸面交易前后检查目标权重、价格日期、价格有效性、账户现金、持仓、订单检查和成交日志；ERROR 级问题直接阻断运行，WARNING 级问题进入命令摘要与日报。
@@ -102,6 +102,7 @@ python main.py
 40. **风险预警与黑名单机制**：`live.risk_blacklist` 可读取 `data/risk_blacklist.csv` 或 `--risk-blacklist` 指定的 CSV/XLSX，把人工风险、公告观察、舆情观察等标记标准化为有效黑名单；`live.order_precheck` 命中后默认直接 `BLOCK`，`live.paper_report` 和命令摘要会展示风险等级、原因和来源。
 41. **公告事件风险过滤**：`live.event_risk_filter` 从 `announcement_events.csv` 中识别问询、处罚、立案、诉讼、退市风险等负面公告，输出风险候选；`scripts/build_event_risk_filter.py` 可生成 `event_risk_candidates_<date>.csv`，并可选导出 `risk_blacklist_<date>.csv` 供日终纸面交易使用。
 42. **真实公告数据源与负面舆情过滤**：`live.announcement_source` 可把 Tushare 公告接口返回值标准化成 `announcement_events.csv`；`live.negative_sentiment_filter` 可把外部新闻 / 舆情 CSV/XLSX 转成 `BLACKLIST/WATCH` 风险候选，并可选导出黑名单文件接入订单预检查。
+43. **统一风险门禁**：`live.risk_gate` 合并人工黑名单、公告风险候选和负面舆情候选，按 `BLOCK > WATCH > PASS` 输出统一门禁；`scripts/build_unified_risk_gate.py` 可导出日终纸面交易可读取的 `risk_blacklist_<date>.csv`。
 
 ### 日终纸面交易
 
@@ -151,6 +152,38 @@ python scripts/build_event_risk_filter.py --events data/announcement_events.csv 
 
 输出默认写入 `output/event_risk_filter/`。生成的 `risk_blacklist_<date>.csv` 可以通过 `scripts/run_daily_paper.py --risk-blacklist ...` 接入订单预检查。
 
+### 公告类型分层诊断
+
+公告事件表接入后，可把回购、增持、减持、问询处罚、分红、合同项目等类型拆开诊断：
+
+```bash
+python scripts/build_announcement_event_type_analysis.py \
+  --universe A50=data/prices_ftse_china_a50_real_20250101_20260710.csv\|data/stock_pool_ftse_china_a50_20260710.csv\|data/announcement_events.csv
+```
+
+脚本输出默认写入 `output/announcement_event_type_analysis/`，包括类型事件数、覆盖率、IC、多头超额、分组收益和 `type_factor_decision_table.csv`。这一步用于判断哪些公告类型适合作为收益候选，哪些更适合作为风险过滤输入，不会自动改变主策略权重。
+
+公告类型诊断之后，可进一步比较“不用公告 / 公告总分 / 公告类型收益因子 / 公告类型收益+风险混合”的组合回测：
+
+```bash
+python scripts/build_announcement_event_type_backtest.py \
+  --universe A50=data/prices_ftse_china_a50_real_20250101_20260710.csv\|data/stock_pool_ftse_china_a50_20260710.csv\|data/announcement_events.csv\|data/fina_indicator_ftse_china_a50_20250101_20260710.csv
+```
+
+脚本默认只运行 `ROLLING` 主策略口径，输出 `performance_summary.csv`、`incremental_effect.csv`、`rolling_incremental_return.png`、`nav_compare.png`、`rebalance_log_rolling.csv` 和各场景因子集合。`--include-equal` 可额外运行等权融合口径。
+
+如果要把风险类公告从 alpha 打分中拆出来，改成调仓前候选股过滤：
+
+```bash
+python scripts/build_announcement_event_type_risk_filter_backtest.py \
+  --prices data/prices_ftse_china_a50_real_20250101_20260710.csv \
+  --stock-pool data/stock_pool_ftse_china_a50_20260710.csv \
+  --events data/announcement_events.csv \
+  --fina data/fina_indicator_ftse_china_a50_20250101_20260710.csv
+```
+
+脚本输出默认写入 `output/announcement_event_type_risk_filter_backtest/`，包括过滤前后 `performance_summary.csv`、`risk_filter_incremental_effect.csv`、`risk_filter_log.csv`、`rebalance_log_rolling.csv` 和 `nav_compare.png`。这一步用于验证负面公告作为风险门禁时，是否真的改变调仓候选和最终组合。
+
 ### 负面舆情风险过滤
 
 新闻、舆情或人工整理的消息表可先统一成风险候选：
@@ -165,9 +198,67 @@ python scripts/build_negative_sentiment_filter.py --sentiment data/news_sentimen
 python scripts/build_negative_sentiment_filter.py --sentiment data/news_sentiment.csv --as-of-date 2026-07-10 --write-blacklist
 ```
 
-舆情表至少需要股票代码和发布时间，标题 / 正文 / 情绪分可选。若没有情绪分，工程会用负面关键词生成保守分数；该模块只做风险过滤候选，不直接替代策略因子。
+舆情表至少需要股票代码和发布时间，标题 / 正文 / 来源 / 新闻链接 / 情绪分可选。若没有情绪分，工程会用负面关键词生成保守分数；若同一表中部分行缺少情绪分，缺失行会回退到关键词打分。该模块当前定位为新闻 / 舆情入口和风险过滤候选，不直接替代策略因子。新闻来源可以是 AkShare 近期个股新闻、手工 CSV、Tushare 权限接口或商业数据源；稳定缓存后再做历史回测和 alpha 验证。
 
-脚本默认读取 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，输出订单计划、订单预检查、纸面成交、纸面账户状态、Markdown 日报和小资金人工确认单。`--no-persist` 可用于只检查流程和摘要，不写账户文件；`--no-report` 可只写 CSV 与账户状态，不生成日报；`--no-manual-confirm` 可关闭人工确认单；`--factor-decay-monitor` 可指定因子失效监控 CSV，并写入命令摘要、Markdown 日报和人工确认单；`--style-exposure` 可指定 `style_exposure.csv`，默认读取 `output/factor_diagnostics/style_exposure.csv` 并把最近一期目标组合风格暴露写入命令摘要和 Markdown 日报；`--risk-blacklist` 可指定风险黑名单，默认读取 `data/risk_blacklist.csv`，文件不存在则视为无黑名单；增强因子健康总览默认自动读取 `output/factor_validation/`、`output/factor_diagnostics/` 与 `output/market_regime/` 下的最新诊断 CSV，不重新计算研究指标；`--no-guard` 可临时关闭运行检查；`--max-price-age-days` 控制价格日期超过多少自然日后给出 stale warning；`--allow-non-trading-day` 允许在非交易日强制运行；`--allow-rerun` 允许覆盖同一交易日已有纸面账户快照；`--execution-mode simulated_broker` 可让日终流程通过统一模拟券商执行订单。
+AkShare 近期个股新闻可先拉成统一 `news_sentiment` 表：
+
+```bash
+python scripts/fetch_akshare_stock_news.py \
+  --stock-pool data/stock_pool_ftse_china_a50_20260710.csv \
+  --output data/news_sentiment_akshare.csv \
+  --merge-existing
+```
+
+`factors.factor_news` 已定义 `NEWS_SENTIMENT_DECAY`、`NEWS_NEGATIVE_RISK_SCORE`、`NEWS_NEGATIVE_COUNT_7D`、`NEWS_HEAT_7D` 四个 MVP 新闻 / 舆情日频因子。AkShare 当前更像近期新闻接口，不是长历史新闻库，因此这一步优先服务每日缓存、风险过滤和后续逐步积累样本。
+
+若要做近期新闻链路的烟雾级验证，可运行：
+
+```bash
+python scripts/build_news_sentiment_smoke_backtest.py \
+  --sentiment output/news_sentiment_akshare_a50_sample.csv \
+  --start 2026-07-01 \
+  --end 2026-07-27 \
+  --output-dir output/news_sentiment_smoke_backtest_a50_sample
+```
+
+该脚本只用于验证“真实新闻 → 日频因子 → 风险过滤对比”链路，不代表新闻因子已经完成长区间有效性验证。
+
+若要在同一 A50 短窗口里比较“基础策略 / 加公告 / 加新闻 / 公告+新闻”四组表现，可运行：
+
+```bash
+python scripts/build_a50_event_news_weekly_smoke_backtest.py \
+  --warmup-start 2026-04-01 \
+  --start 2026-07-01 \
+  --end 2026-07-26
+```
+
+若要把负面舆情作为风险门禁，而不是作为 alpha 因子加分，可运行：
+
+```bash
+python scripts/build_negative_sentiment_filter_backtest.py \
+  --warmup-start 2026-04-01 \
+  --start 2026-07-01 \
+  --end 2026-07-26
+```
+
+该脚本会比较不过滤、只过滤 `BLACKLIST`、同时过滤 `BLACKLIST/WATCH` 三种口径，并输出负面候选、调仓日风险命中日志、净值对比和绩效汇总。
+
+公告风险、负面舆情和人工黑名单可以进一步合并成统一门禁：
+
+```bash
+python scripts/build_unified_risk_gate.py \
+  --trade-date 2026-07-24 \
+  --stock-pool data/stock_pool_ftse_china_a50_20260710.csv \
+  --events data/announcement_events_a50_20260701_20260726.csv \
+  --sentiment data/news_sentiment_a50_20260701_20260726.csv \
+  --output-dir output/unified_risk_gate_a50_20260724 \
+  --write-blacklist \
+  --include-watch-in-blacklist
+```
+
+输出包括统一门禁、风险明细、摘要和可选 `risk_blacklist_<date>.csv`。后续日终纸面交易可通过 `--risk-blacklist` 接入这份统一风险结果。
+
+脚本默认读取 `output/rebalance_logs/<strategy>.csv` 与 `output/cache/prices_wide_close.csv`，输出订单计划、订单预检查、纸面成交、纸面账户状态、Markdown 日报和小资金人工确认单。`--no-persist` 可用于只检查流程和摘要，不写账户文件；`--no-report` 可只写 CSV 与账户状态，不生成日报；`--no-manual-confirm` 可关闭人工确认单；`--factor-decay-monitor` 可指定因子失效监控 CSV，并写入命令摘要、Markdown 日报和人工确认单；`--style-exposure` 可指定 `style_exposure.csv`，默认读取 `output/factor_diagnostics/style_exposure.csv` 并把最近一期目标组合风格暴露写入命令摘要和 Markdown 日报；`--risk-gate` 可指定统一风险门禁 CSV，用于命令摘要和 Markdown 日报展示 `PASS/WATCH/BLOCK`；`--risk-blacklist` 可指定风险黑名单，默认读取 `data/risk_blacklist.csv`，文件不存在则视为无黑名单，并进入订单预检查；增强因子健康总览默认自动读取 `output/factor_validation/`、`output/factor_diagnostics/` 与 `output/market_regime/` 下的最新诊断 CSV，不重新计算研究指标；`--no-guard` 可临时关闭运行检查；`--max-price-age-days` 控制价格日期超过多少自然日后给出 stale warning；`--allow-non-trading-day` 允许在非交易日强制运行；`--allow-rerun` 允许覆盖同一交易日已有纸面账户快照；`--execution-mode simulated_broker` 可让日终流程通过统一模拟券商执行订单。
 
 ### 纸面账户 / 券商只读对账
 
@@ -237,7 +328,7 @@ python scripts/build_live_universe.py \
 - **IC 稳定性**：`config.ic_rolling_windows` 默认 `(20, 60)`；诊断层会统计 IC 分位数、正负占比、滚动均值和滚动正值比例。
 - **因子分组**：`config.factor_group_count` 默认 `5`；诊断层按因子从低到高分组，`G1` 为低分组，`G5` 为高分组，观察 Top-Bottom 与单调性。
 - **机器学习打分因子**：`enable_ml_score=True` 时，`ML_SCORE` 会用已有因子特征滚动训练并预测未来 `ml_score_forward_days` 日收益；`ml_score_model` 可设为 `lightgbm`、`catboost`、`xgboost`、`hist_gradient_boosting` 或 `auto`，缺少可选依赖时会回退到 sklearn 实现。它只是候选因子，仍需经过 IC、分组收益、样本外验证和回测。
-- **公告事件因子**：`announcement_event_path` 默认指向 `data/announcement_events.csv`，也可用 `QUANT_ANNOUNCEMENT_EVENT_PATH` 指定。`factors.factor_events` 支持中文列名和显式 `event_score`；若没有分数字段，会用公告标题关键词生成粗略正负分，并按 `announcement_event_effective_days` 向后衰减成 `ANNOUNCEMENT_EVENT_SCORE`。`scripts/fetch_tushare_announcements.py` 可从真实公告源生成同一格式文件，Token 只从运行环境读取。
+- **公告事件因子**：`announcement_event_path` 默认指向 `data/announcement_events.csv`，也可用 `QUANT_ANNOUNCEMENT_EVENT_PATH` 指定。`factors.factor_events` 支持中文列名和显式 `event_score`；若没有分数字段，会用公告标题关键词生成粗略正负分，并按 `announcement_event_effective_days` 向后衰减成 `ANNOUNCEMENT_EVENT_SCORE`。`calc_announcement_event_type_scores` 可进一步按回购、增持、减持、问询处罚、业绩预告、分红、质押、诉讼、合同项目等类型生成分层事件因子。`scripts/fetch_tushare_announcements.py` 可从真实公告源生成同一格式文件，Token 只从运行环境读取。
 - **行业内标准化**：`factor_standardize_by_industry=True` 默认开启；`main.py` 会从股票池 `子行业` / `分类` 或行情长表 `industry_col` 读取行业，在同一交易日同一行业内做 winsorize + z-score。若行业缺失或行业样本少于 `factor_industry_min_count`，该部分回退全股票池横截面 z-score。可用 `QUANT_FACTOR_STANDARDIZE_BY_INDUSTRY=0` 做关闭对照。
 - **多因子权重建议**：全样本 `factor_weight_summary.csv` 用于观察权重是否合理；训练段 `factor_weight_train_summary.csv` 生成 `FUSED_SCORE_WEIGHTED`；滚动日志 `rolling_factor_weight_log.csv` 记录每个调仓日前实际使用的因子权重，并生成 `FUSED_ROLLING_SCORE_WEIGHTED`；`factor_weight_stability_summary.csv`、`factor_weight_drift_events.csv`、`factor_weight_portfolio_drift.csv` 用于观察滚动权重是否稳定、是否有跳变、是否被单一因子主导。
 - **样本外验证与因子失效监控**：`analysis.factor_validation` 复用 IC、多头超额和分组收益口径，按 `factor_weight_train_ratio` 切分训练段 / 验证段，保存 `output/factor_validation/out_of_sample_validation.csv` 与 `factor_decay_monitor.csv`；滚动样本外验证按 `rolling_oos_train_days` / `rolling_oos_validation_days` / `rolling_oos_step_days` 多窗口复查因子稳定性，保存 `rolling_out_of_sample_validation.csv` 与 `rolling_out_of_sample_summary.csv`。

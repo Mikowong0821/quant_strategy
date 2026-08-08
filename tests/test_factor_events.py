@@ -12,7 +12,9 @@ import pandas as pd
 from config import get_settings
 from factors.factor_events import (
     ANNOUNCEMENT_EVENT_SCORE,
+    calc_announcement_event_type_scores,
     calc_announcement_event_score,
+    classify_announcement_event,
     load_announcement_events,
 )
 from factors.panel_builder import build_four_factor_panel
@@ -50,6 +52,49 @@ class TestAnnouncementEventFactor(unittest.TestCase):
         self.assertGreater(float(score.loc[(days[3], "AAA")]), 0.0)
         self.assertLess(float(score.loc[(days[3], "BBB")]), 0.0)
         self.assertAlmostEqual(float(score.loc[(days[0], "AAA")]), 0.0)
+
+    def test_classify_and_build_type_scores(self) -> None:
+        days = pd.bdate_range("2024-01-01", periods=6)
+        prices_long = pd.DataFrame(
+            {
+                "trade_date": list(days) * 2,
+                "ts_code": ["AAA"] * len(days) + ["BBB"] * len(days),
+                "close": [10.0] * (len(days) * 2),
+            }
+        )
+        events = pd.DataFrame(
+            [
+                {
+                    "event_date": "2024-01-03",
+                    "symbol": "AAA",
+                    "event_type": "announcement",
+                    "title": "2023年度权益分派实施公告",
+                    "event_score": 0.0,
+                },
+                {
+                    "event_date": "2024-01-04",
+                    "symbol": "BBB",
+                    "event_type": "announcement",
+                    "title": "收到监管问询函",
+                    "event_score": -0.7,
+                },
+            ]
+        )
+
+        self.assertEqual(classify_announcement_event("", "关于股份回购进展情况的公告"), "BUYBACK")
+        self.assertEqual(classify_announcement_event("", "收到监管问询函"), "INQUIRY_PENALTY")
+
+        scores = calc_announcement_event_type_scores(
+            events,
+            prices_long,
+            effective_days=2,
+            categories=["DIVIDEND", "INQUIRY_PENALTY"],
+        )
+
+        self.assertIn("ANNOUNCEMENT_EVENT_DIVIDEND", scores.columns)
+        self.assertIn("ANNOUNCEMENT_EVENT_INQUIRY_PENALTY", scores.columns)
+        self.assertGreater(float(scores.loc[(days[2], "AAA"), "ANNOUNCEMENT_EVENT_DIVIDEND"]), 0.0)
+        self.assertLess(float(scores.loc[(days[3], "BBB"), "ANNOUNCEMENT_EVENT_INQUIRY_PENALTY"]), 0.0)
 
     def test_load_events_and_build_panel(self) -> None:
         days = pd.bdate_range("2024-01-01", periods=30)

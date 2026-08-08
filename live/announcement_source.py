@@ -206,14 +206,17 @@ def fetch_akshare_cninfo_announcement_events(
             continue
         seen.add(sym)
         code = sym.split(".", 1)[0]
-        df = fetcher(
-            symbol=code,
-            market=market,
-            keyword=keyword,
-            category=category,
-            start_date=start_s,
-            end_date=end_s,
-        )
+        try:
+            df = fetcher(
+                symbol=code,
+                market=market,
+                keyword=keyword,
+                category=category,
+                start_date=start_s,
+                end_date=end_s,
+            )
+        except Exception:
+            continue
         if df is not None and not df.empty:
             frames.append(df)
     if not frames:

@@ -224,6 +224,61 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertIn("## 风险预警与黑名单", report)
             self.assertIn("| AAA | 测试股票 | HIGH | manual_risk_review |", report)
 
+    def test_run_from_outputs_adds_risk_gate_to_report_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            gate_path = Path(td) / "risk_gate.csv"
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "symbol": "AAA",
+                        "name": "测试股票",
+                        "gate_status": "WATCH",
+                        "severity": "WATCH",
+                        "risk_count": 1,
+                        "block_count": 0,
+                        "watch_count": 1,
+                        "sources": "negative_sentiment:unit",
+                        "reason": "negative_sentiment_watch",
+                        "latest_triggered_at": "2024-01-30",
+                        "expires_at": "2024-02-04",
+                    }
+                ]
+            ).to_csv(gate_path, index=False)
+
+            result = run_daily_paper_from_outputs(
+                settings,
+                strategy="TEST",
+                risk_gate_path=gate_path,
+            )
+            summary = format_daily_paper_summary(result)
+            report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
+            report = report_path.read_text(encoding="utf-8")
+
+            self.assertIn("risk_gate=WATCH", summary)
+            self.assertIn("WATCH=1", summary)
+            self.assertIn("## 统一风险门禁", report)
+            self.assertIn("| AAA | 测试股票 | WATCH | 1 |", report)
+
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(

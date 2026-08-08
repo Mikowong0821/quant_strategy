@@ -17,6 +17,7 @@ NEGATIVE_SENTIMENT_COLUMNS = [
     "sentiment_score",
     "negative_keywords",
     "source",
+    "url",
     "risk_action",
     "risk_reason",
     "blacklist_until",
@@ -28,6 +29,7 @@ _TITLE_COLS = ("title", "标题", "news_title")
 _CONTENT_COLS = ("content", "正文", "summary", "摘要", "text")
 _SCORE_COLS = ("sentiment_score", "score", "情绪分", "舆情分")
 _SOURCE_COLS = ("source", "src", "来源")
+_URL_COLS = ("url", "link", "新闻链接", "链接")
 
 _HIGH_NEGATIVE_KEYWORDS = {
     "立案",
@@ -105,18 +107,22 @@ def normalize_sentiment_items(items: pd.DataFrame | None) -> pd.DataFrame:
     content_col = _first_existing(frame.columns, _CONTENT_COLS)
     score_col = _first_existing(frame.columns, _SCORE_COLS)
     source_col = _first_existing(frame.columns, _SOURCE_COLS)
+    url_col = _first_existing(frame.columns, _URL_COLS)
 
     out = pd.DataFrame()
-    out["publish_time"] = pd.to_datetime(frame[time_col], errors="coerce")
+    out["publish_time"] = pd.to_datetime(frame[time_col], errors="coerce", format="mixed")
     out["symbol"] = frame[symbol_col].map(normalize_ts_code)
     out["title"] = frame[title_col].fillna("").astype(str) if title_col else ""
     out["content"] = frame[content_col].fillna("").astype(str) if content_col else ""
     if score_col:
-        out["sentiment_score"] = pd.to_numeric(frame[score_col], errors="coerce")
-        keyword_pairs = [
-            _keyword_sentiment_score("%s %s" % (title, content))[1]
+        keyword_scored = [
+            _keyword_sentiment_score("%s %s" % (title, content))
             for title, content in zip(out["title"], out["content"], strict=True)
         ]
+        raw_score = pd.to_numeric(frame[score_col], errors="coerce")
+        fallback_score = pd.Series([score for score, _ in keyword_scored], index=raw_score.index, dtype=float)
+        out["sentiment_score"] = raw_score.fillna(fallback_score)
+        keyword_pairs = [hits for _, hits in keyword_scored]
     else:
         pairs = [
             _keyword_sentiment_score("%s %s" % (title, content))
@@ -126,6 +132,7 @@ def normalize_sentiment_items(items: pd.DataFrame | None) -> pd.DataFrame:
         keyword_pairs = [hits for _, hits in pairs]
     out["negative_keywords"] = [";".join(hits) for hits in keyword_pairs]
     out["source"] = frame[source_col].fillna("sentiment").astype(str) if source_col else "sentiment"
+    out["url"] = frame[url_col].fillna("").astype(str) if url_col else ""
     out = out.dropna(subset=["publish_time"])
     out = out[out["symbol"].astype(str).str.strip() != ""]
     out["sentiment_score"] = pd.to_numeric(out["sentiment_score"], errors="coerce")

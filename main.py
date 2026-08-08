@@ -351,7 +351,10 @@ def _last_rebalance_dates(prices: pd.DataFrame, settings: Settings) -> pd.Dateti
     rf = _resample_freq_alias(settings.rebalance_freq)
     if prices.empty:
         return pd.DatetimeIndex([])
-    dates = pd.DatetimeIndex(prices.resample(rf).apply(lambda x: x.index[-1]).iloc[:, 0])
+    price_frame = prices.dropna(how="all").sort_index()
+    dates = pd.DatetimeIndex(
+        [group.index[-1] for _, group in price_frame.groupby(pd.Grouper(freq=rf)) if not group.empty]
+    )
     if bool(getattr(settings, "force_final_rebalance", False)) and len(prices.index) > 0:
         dates = dates.union(pd.DatetimeIndex([prices.index[-1]]))
     return dates.sort_values()

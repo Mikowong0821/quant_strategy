@@ -11,6 +11,7 @@ from live.stock_pool import normalize_ts_code
 
 
 ANNOUNCEMENT_EVENT_SCORE = "ANNOUNCEMENT_EVENT_SCORE"
+ANNOUNCEMENT_EVENT_TYPE_PREFIX = "ANNOUNCEMENT_EVENT_"
 
 EVENT_COLUMNS = [
     "event_date",
@@ -40,6 +41,8 @@ _POSITIVE_KEYWORDS = {
     "合同": 0.5,
     "分红": 0.4,
     "派息": 0.4,
+    "利润分配": 0.4,
+    "权益分派": 0.4,
     "业绩快报": 0.4,
     "buyback": 1.0,
     "repurchase": 1.0,
@@ -51,13 +54,20 @@ _NEGATIVE_KEYWORDS = {
     "减持": -0.8,
     "问询": -0.7,
     "处罚": -1.0,
+    "监管函": -0.9,
+    "警示函": -0.8,
+    "纪律处分": -1.0,
     "立案": -1.0,
     "调查": -0.9,
     "诉讼": -0.8,
+    "仲裁": -0.7,
     "亏损": -0.8,
     "预减": -0.7,
+    "首亏": -0.8,
+    "续亏": -0.8,
     "商誉减值": -0.8,
     "质押": -0.5,
+    "冻结": -0.7,
     "退市": -1.0,
     "风险警示": -1.0,
     "penalty": -1.0,
@@ -65,6 +75,24 @@ _NEGATIVE_KEYWORDS = {
     "lawsuit": -0.8,
     "loss": -0.8,
     "reduction": -0.8,
+}
+
+EVENT_TYPE_RULES: dict[str, dict[str, Any]] = {
+    "BUYBACK": {"keywords": ("回购", "buyback", "repurchase"), "score": 1.0},
+    "HOLDER_INCREASE": {"keywords": ("增持", "increase holding"), "score": 0.8},
+    "HOLDER_REDUCTION": {"keywords": ("减持", "reduction", "reduce holding"), "score": -0.8},
+    "INQUIRY_PENALTY": {
+        "keywords": ("问询", "监管函", "警示函", "处罚", "立案", "调查", "纪律处分", "责令改正"),
+        "score": -1.0,
+    },
+    "PERFORMANCE_POSITIVE": {"keywords": ("预增", "扭亏", "略增", "续盈", "业绩预喜"), "score": 0.8},
+    "PERFORMANCE_NEGATIVE": {"keywords": ("预减", "首亏", "续亏", "略减", "亏损", "业绩预亏"), "score": -0.8},
+    "DIVIDEND": {"keywords": ("分红", "派息", "利润分配", "权益分派", "现金红利"), "score": 0.4},
+    "PLEDGE_FREEZE": {"keywords": ("质押", "冻结", "解押"), "score": -0.5},
+    "LITIGATION": {"keywords": ("诉讼", "仲裁"), "score": -0.8},
+    "CONTRACT_PROJECT": {"keywords": ("中标", "合同", "订单", "项目"), "score": 0.6},
+    "REFINANCE_MA": {"keywords": ("定增", "非公开发行", "可转债", "重组", "并购", "收购"), "score": 0.0},
+    "GOVERNANCE": {"keywords": ("董事会", "监事会", "股东大会", "高级管理人员", "独立董事"), "score": 0.0},
 }
 
 
@@ -93,6 +121,21 @@ def _score_from_text(event_type: Any, title: Any) -> float:
         if keyword.lower() in text:
             score += value
     return max(min(score, 2.0), -2.0)
+
+
+def classify_announcement_event(event_type: Any, title: Any) -> str:
+    """按公告标题和公告类型，将公告归入粗粒度事件桶。"""
+    text = ("%s %s" % (event_type or "", title or "")).lower()
+    for event_group, spec in EVENT_TYPE_RULES.items():
+        for keyword in spec["keywords"]:
+            if str(keyword).lower() in text:
+                return event_group
+    return "OTHER"
+
+
+def _event_type_default_score(event_group: str) -> float:
+    spec = EVENT_TYPE_RULES.get(str(event_group), {})
+    return float(spec.get("score", 0.0))
 
 
 def normalize_announcement_events(events: pd.DataFrame | None) -> pd.DataFrame:
@@ -203,3 +246,68 @@ def calc_announcement_event_score(
     out = out.astype(float).sort_index()
     out.name = ANNOUNCEMENT_EVENT_SCORE
     return out
+
+
+def calc_announcement_event_type_scores(
+    events: pd.DataFrame | None,
+    prices_long: pd.DataFrame,
+    *,
+    effective_days: int = 20,
+    categories: list[str] | tuple[str, ...] | None = None,
+    date_col: str = "trade_date",
+    symbol_col: str = "ts_code",
+) -> pd.DataFrame:
+    """
+    将公告事件按类型拆成多列日频因子。
+
+    每列只使用对应公告类型。若原始公告已有 `event_score`，优先使用原始分数；
+    若分数为 0，则使用该公告类型的默认方向分数，避免分红、利润分配等公告
+    因关键词过窄而被当成完全无信息事件。
+    """
+    norm_events = normalize_announcement_events(events)
+    if norm_events.empty:
+        px = prices_long[[date_col, symbol_col]].copy()
+        px[date_col] = pd.to_datetime(px[date_col], errors="coerce")
+        index = pd.MultiIndex.from_frame(
+            px.dropna(subset=[date_col])
+            .rename(columns={date_col: "date", symbol_col: "symbol"})[["date", "symbol"]]
+            .drop_duplicates()
+        )
+        return pd.DataFrame(index=index.sort_values())
+
+    norm_events = norm_events.copy()
+    norm_events["event_group"] = [
+        classify_announcement_event(event_type, title)
+        for event_type, title in zip(norm_events["event_type"], norm_events["title"], strict=True)
+    ]
+    selected = list(categories) if categories is not None else sorted(norm_events["event_group"].unique())
+
+    columns: dict[str, pd.Series] = {}
+    for event_group in selected:
+        sub = norm_events[norm_events["event_group"] == event_group].copy()
+        factor_name = f"{ANNOUNCEMENT_EVENT_TYPE_PREFIX}{event_group}"
+        if sub.empty:
+            empty = pd.DataFrame(columns=EVENT_COLUMNS)
+            columns[factor_name] = calc_announcement_event_score(
+                empty,
+                prices_long,
+                effective_days=effective_days,
+                date_col=date_col,
+                symbol_col=symbol_col,
+            ).rename(factor_name)
+            continue
+
+        default_score = _event_type_default_score(str(event_group))
+        score = pd.to_numeric(sub["event_score"], errors="coerce").fillna(0.0)
+        if abs(default_score) > 1e-12:
+            score = score.mask(score.abs() <= 1e-12, default_score)
+        sub["event_score"] = score
+        columns[factor_name] = calc_announcement_event_score(
+            sub.reindex(columns=EVENT_COLUMNS),
+            prices_long,
+            effective_days=effective_days,
+            date_col=date_col,
+            symbol_col=symbol_col,
+        ).rename(factor_name)
+
+    return pd.DataFrame(columns).sort_index()

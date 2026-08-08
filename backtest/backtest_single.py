@@ -29,7 +29,10 @@ def _rebalance_dates(prices_wide: pd.DataFrame, settings: Any) -> pd.DatetimeInd
     rf = _resample_freq_alias(settings.rebalance_freq)
     if prices_wide.empty:
         return pd.DatetimeIndex([])
-    dates = pd.DatetimeIndex(prices_wide.resample(rf).apply(lambda x: x.index[-1]).iloc[:, 0])
+    price_frame = prices_wide.dropna(how="all").sort_index()
+    dates = pd.DatetimeIndex(
+        [group.index[-1] for _, group in price_frame.groupby(pd.Grouper(freq=rf)) if not group.empty]
+    )
     if bool(getattr(settings, "force_final_rebalance", False)) and len(prices_wide.index) > 0:
         dates = dates.union(pd.DatetimeIndex([prices_wide.index[-1]]))
     return dates.sort_values()

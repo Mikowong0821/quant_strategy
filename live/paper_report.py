@@ -12,6 +12,7 @@ from config import Settings
 from live.factor_health_report import summarize_factor_health_report
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
 from live.risk_blacklist import summarize_risk_blacklist_for_report
+from live.risk_gate import summarize_risk_gate_for_report
 from live.style_exposure_monitor import summarize_style_exposure_for_report
 
 
@@ -282,6 +283,54 @@ def _risk_blacklist_section(risk_blacklist: pd.DataFrame | None) -> list[str]:
     return lines
 
 
+def _risk_gate_section(risk_gate: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_risk_gate_for_report(risk_gate)
+    lines = [
+        "## 统一风险门禁",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if risk_gate is None or risk_gate.empty:
+        lines.extend(
+            [
+                "- 明细：未找到统一风险门禁表；可先运行 `scripts/build_unified_risk_gate.py`，再通过 `--risk-gate` 指定。",
+                "",
+            ]
+        )
+        return lines
+
+    display = risk_gate.copy()
+    for col in ["trade_date", "latest_triggered_at", "expires_at"]:
+        if col in display.columns:
+            display[col] = pd.to_datetime(display[col], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+    if "gate_status" in display.columns:
+        rank = {"BLOCK": 0, "WATCH": 1, "PASS": 2}
+        display["_rank"] = display["gate_status"].astype(str).str.upper().map(rank).fillna(9)
+        display = display.sort_values(["_rank", "symbol"]).drop(columns="_rank")
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                [
+                    "symbol",
+                    "name",
+                    "gate_status",
+                    "risk_count",
+                    "sources",
+                    "reason",
+                    "latest_triggered_at",
+                    "expires_at",
+                ],
+                ["标的", "名称", "门禁", "风险条数", "来源", "原因", "最近触发", "失效日"],
+                max_rows=30,
+            ),
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -306,6 +355,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     factor_monitor = result.get("factor_decay_monitor")
     style_exposure = result.get("style_exposure")
     factor_health_report = result.get("factor_health_report")
+    risk_gate = result.get("risk_gate")
     risk_blacklist = result.get("risk_blacklist")
 
     lines: list[str] = [
@@ -361,6 +411,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     lines.extend(_factor_health_section(factor_monitor))
     lines.extend(_style_exposure_section(style_exposure))
     lines.extend(_enhanced_factor_health_section(factor_health_report))
+    lines.extend(_risk_gate_section(risk_gate))
     lines.extend(_risk_blacklist_section(risk_blacklist))
 
     blocked = checks[checks["check_status"] == "BLOCK"] if not checks.empty else checks

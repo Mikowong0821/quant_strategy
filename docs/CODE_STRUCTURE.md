@@ -128,7 +128,7 @@ flowchart LR
 | `factor_pe.py` | **市盈率类因子**：需要行情与财报字段对齐，输出长表。 |
 | `factor_roe.py` | **ROE 类因子**：依赖财务表与报告期/公告日规则，输出长表。 |
 | `factor_finance.py` | **质量、成长与现金流类财务因子**：毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量；按公告日向后对齐，避免未来函数。 |
-| `factor_events.py` | **公告事件因子**：读取本地公告事件 CSV/XLSX，支持中文列名和显式 `event_score`，没有分数字段时用标题关键词生成粗略正负分，并按公告日向后衰减成 `ANNOUNCEMENT_EVENT_SCORE`。 |
+| `factor_events.py` | **公告事件因子**：读取本地公告事件 CSV/XLSX，支持中文列名和显式 `event_score`，没有分数字段时用标题关键词生成粗略正负分，并按公告日向后衰减成 `ANNOUNCEMENT_EVENT_SCORE`；也支持把回购、减持、问询处罚、分红、合同项目等公告拆成类型分层事件因子。 |
 | `factor_ml.py` | **机器学习打分因子**：用已有因子面板滚动训练梯度提升类模型，预测未来收益并输出 `ML_SCORE`；只作为候选因子进入 IC、分组收益、样本外验证和回测。 |
 | `preprocess.py` | **因子清洗与标准化**：按交易日横截面做 winsorize、z-score，也支持行业内 z-score；行业样本不足时回退全截面结果。主流程默认用标准化后的研究面板进入 IC、诊断和回测。 |
 
@@ -191,15 +191,17 @@ flowchart LR
 | `order_precheck.py` | **订单预检查**：检查订单计划的现金、可卖数量、买入手数、最小金额、停牌、涨跌停和风险黑名单约束，输出 `PASS/BLOCK` 与原因。只做检查，不修改订单、不撮合成交。 |
 | `risk_blacklist.py` | **风险预警与黑名单**：读取 CSV/XLSX、DataFrame、字典或代码列表，标准化 `symbol/reason/severity/source/active/created_at/expires_at`，并把当前有效黑名单交给订单预检查和纸面交易日报。 |
 | `announcement_source.py` | **真实公告数据源**：把 Tushare 公告接口返回值统一成 `announcement_events.csv`，让公告事件因子和公告风险过滤都复用同一张事件表。 |
+| `news_source.py` | **新闻 / 舆情数据源**：把 AkShare 个股新闻、未来 Tushare 新闻或商业新闻源统一成 `news_sentiment` 表，保留发布时间、标题、正文、来源、链接和情绪分。 |
 | `event_risk_filter.py` | **公告事件风险过滤**：从公告事件表中识别问询、处罚、立案、诉讼、退市风险等负面事件，生成 `BLACKLIST/WATCH` 风险候选，并可转换为黑名单文件。 |
-| `negative_sentiment_filter.py` | **负面舆情过滤**：读取外部新闻 / 舆情 CSV/XLSX，按情绪分或负面关键词生成 `BLACKLIST/WATCH` 风险候选，并可转换为黑名单文件。 |
+| `negative_sentiment_filter.py` | **新闻 / 舆情入口与负面过滤**：读取外部新闻 / 舆情 CSV/XLSX，统一股票代码、发布时间、标题、正文、来源、链接和情绪分，并按情绪分或负面关键词生成 `BLACKLIST/WATCH` 风险候选，可转换为黑名单文件。 |
+| `risk_gate.py` | **统一风险门禁**：合并人工黑名单、公告风险候选和负面舆情候选，按 `BLOCK > WATCH > PASS` 输出统一门禁表，并可导出订单预检查可读取的 `risk_blacklist`。 |
 | `broker.py` | **统一券商接口协议**：定义 `BrokerAdapter`、`BrokerAccount`、`BrokerPosition`、`BrokerOrder`、`SimulatedBroker` 与 `RealBrokerReadOnlyAdapter`，把查资金、查持仓、查订单、下单、撤单抽象成统一方法。模拟券商用于验证协议；真实券商先用只读 adapter 验证账户、持仓和订单读取。 |
 | `broker_factory.py` | **券商通道选择入口**：根据 `broker_mode/broker_provider/account_id` 创建模拟或只读 Adapter；后续 QMT、PTrade、掘金接入都应注册到这一层，真实交易模式当前明确阻断。 |
 | `broker_reconcile.py` | **纸面 / 真实账户只读对账**：比较纸面账户与只读券商账户的现金、总资产、持仓股数和可用股数差异，输出账户差异、持仓差异和 Markdown 对账报告。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
 | `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、执行模式选择、成交回报兼容、持仓更新、账户快照和落盘；默认走旧纸面成交，也可通过 `simulated_broker` 走统一券商接口。 |
-| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子失效监控、增强因子健康总览、风格暴露、风险黑名单、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
+| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子失效监控、增强因子健康总览、风格暴露、统一风险门禁、风险黑名单、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
 | `factor_health_report.py` | **增强因子健康总览**：读取样本外失效、滚动样本外、因子准入、冗余、权重漂移和牛熊市分段 CSV，压缩成日终纸面交易日报可读的健康摘要；只展示，不重新计算研究指标。 |
 | `manual_confirmation.py` | **小资金人工确认实盘单**：基于订单计划、预检查和可选因子失效监控生成 CSV / Markdown 确认单，预留真实执行回填字段；只辅助人工下单，不自动连接券商。 |
 | `execution_feedback.py` | **真实成交回填与执行偏差分析**：读取人工确认单中的真实成交回填字段，对比系统建议数量、价格、金额和实际执行结果，输出逐笔偏差、成交状态和汇总报告。 |
@@ -212,13 +214,21 @@ flowchart LR
 
 | 文件 | 作用 |
 |------|------|
-| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--risk-blacklist`、`--factor-decay-monitor`、`--execution-mode`、`--no-persist`、`--no-report`、`--no-manual-confirm`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
+| `run_daily_paper.py` | **日终纸面交易脚本**：薄命令行入口，调用 `live.daily_paper_cli.main`。默认使用 `FUSED_ROLLING_SCORE_WEIGHTED`，支持 `--strategy`、`--trade-date`、`--trade-status`、`--risk-gate`、`--risk-blacklist`、`--factor-decay-monitor`、`--execution-mode`、`--no-persist`、`--no-report`、`--no-manual-confirm`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day`、`--allow-rerun`。 |
 | `run_scheduled_daily_paper.py` | **每日调度入口**：薄命令行入口，调用 `live.paper_scheduler.run_scheduled_daily_paper`，把未识别参数透传给日终纸面交易 CLI，并写 `output/scheduler_logs/<date>.log`。 |
 | `reconcile_paper_broker.py` | **纸面 / 券商只读对账入口**：读取外部券商账户和持仓 CSV，构造只读 adapter，并与纸面账户状态生成差异报告。 |
 | `build_execution_feedback.py` | **真实成交回填入口**：读取人工确认单 CSV 中的 `executed_qty`、`executed_price` 等字段，生成执行偏差 CSV 与 Markdown 报告。 |
 | `fetch_tushare_announcements.py` | **真实公告源接入入口**：读取股票池或显式股票代码，从 Tushare 拉取公告并保存为统一事件表。 |
+| `fetch_akshare_stock_news.py` | **AkShare 个股新闻入口**：按股票池或显式代码拉取东方财富个股最近新闻，统一保存为 `news_sentiment` 表，并支持和既有缓存合并去重。 |
+| `build_news_sentiment_smoke_backtest.py` | **新闻 / 舆情烟雾回测入口**：读取统一新闻表和近期行情，构造 `NEWS_*` 日频因子，并比较等权基线与负面舆情过滤版的短窗口表现。 |
+| `build_a50_event_news_weekly_smoke_backtest.py` | **A50 公告 + 新闻短窗口周频回测**：用 Tushare A50 行情、AkShare 公告和 AkShare 新闻构造四组对比，验证信息因子作为 alpha 加入后是否改善短期组合表现。 |
 | `build_event_risk_filter.py` | **公告事件风险过滤入口**：读取公告事件 CSV/XLSX，输出风险候选表，并可选导出日终纸面交易可读取的黑名单文件。 |
+| `build_announcement_event_type_analysis.py` | **公告类型分层诊断入口**：把公告表拆成事件类型因子，并输出覆盖率、IC、多头超额、分组收益和建议标签。 |
+| `build_announcement_event_type_backtest.py` | **公告类型因子组合回测入口**：比较不用公告、公告总分、公告类型收益因子、公告类型收益+风险混合等方案的滚动综合权重回测表现。 |
+| `build_announcement_event_type_risk_filter_backtest.py` | **公告类型风险过滤回测入口**：正向公告类型继续做 alpha，负面公告类型作为调仓前候选股门禁，并输出过滤前后净值、绩效和风险命中日志。 |
 | `build_negative_sentiment_filter.py` | **负面舆情过滤入口**：读取新闻 / 舆情 CSV/XLSX，输出负面风险候选表，并可选导出日终纸面交易可读取的黑名单文件。 |
+| `build_negative_sentiment_filter_backtest.py` | **负面舆情风险门禁回测**：不把新闻作为 alpha 加分，而是在调仓日前把仍处于 `BLACKLIST/WATCH` 有效期的股票从候选中剔除，对比过滤前后组合表现。 |
+| `build_unified_risk_gate.py` | **统一风险门禁入口**：读取股票池、公告风险候选、负面舆情候选和人工黑名单，输出 `risk_gate_<date>.csv`、风险明细和可选 `risk_blacklist_<date>.csv`。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 

@@ -7,7 +7,10 @@ from typing import Callable, Dict
 
 from factors.factor_events import (
     ANNOUNCEMENT_EVENT_SCORE,
+    ANNOUNCEMENT_EVENT_TYPE_PREFIX,
+    calc_announcement_event_type_scores,
     calc_announcement_event_score,
+    classify_announcement_event,
     load_announcement_events,
 )
 from factors.factor_finance import (
@@ -19,6 +22,14 @@ from factors.factor_finance import (
 )
 from factors.factor_ml import ML_SCORE_NAME, build_ml_score_factor, forward_return_label
 from factors.factor_momentum import calc_momentum
+from factors.factor_news import (
+    NEWS_FACTOR_NAMES,
+    NEWS_HEAT_7D,
+    NEWS_NEGATIVE_COUNT_7D,
+    NEWS_NEGATIVE_RISK_SCORE,
+    NEWS_SENTIMENT_DECAY,
+    calc_news_sentiment_factors,
+)
 from factors.factor_pe import calc_pe
 from factors.factor_reversal import calc_reversal
 from factors.factor_roe import calc_roe
@@ -41,9 +52,18 @@ __all__ = [
     "DEFAULT_FACTOR_ORDER",
     "build_four_factor_panel",
     "ML_SCORE_NAME",
+    "NEWS_FACTOR_NAMES",
+    "NEWS_HEAT_7D",
+    "NEWS_NEGATIVE_COUNT_7D",
+    "NEWS_NEGATIVE_RISK_SCORE",
+    "NEWS_SENTIMENT_DECAY",
     "ANNOUNCEMENT_EVENT_SCORE",
+    "ANNOUNCEMENT_EVENT_TYPE_PREFIX",
     "build_ml_score_factor",
+    "calc_news_sentiment_factors",
+    "calc_announcement_event_type_scores",
     "calc_announcement_event_score",
+    "classify_announcement_event",
     "calc_momentum",
     "calc_gross_margin",
     "calc_low_debt_to_assets",

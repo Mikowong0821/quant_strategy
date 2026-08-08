@@ -228,6 +228,49 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("- 整体状态：`UNSTABLE`", report)
             self.assertIn("| 滚动样本外 | UNSTABLE | 滚动窗口不稳定因子=1/2 |", report)
 
+    def test_report_includes_unified_risk_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["risk_gate"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "symbol": "AAA",
+                        "name": "测试股票",
+                        "gate_status": "BLOCK",
+                        "severity": "HIGH",
+                        "risk_count": 2,
+                        "block_count": 1,
+                        "watch_count": 1,
+                        "sources": "announcement_event;negative_sentiment",
+                        "reason": "处罚 | 违规",
+                        "latest_triggered_at": "2024-01-30",
+                        "expires_at": "2024-02-09",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 统一风险门禁", report)
+            self.assertIn("- 整体状态：`BLOCK`", report)
+            self.assertIn("| AAA | 测试股票 | BLOCK | 2 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()
