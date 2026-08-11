@@ -44,6 +44,16 @@ from live.risk_blacklist import (
     summarize_risk_blacklist_for_report,
 )
 from live.risk_gate import load_risk_gate, summarize_risk_gate_for_report
+from live.risk_limits import (
+    check_risk_limits,
+    load_risk_limits,
+    summarize_risk_limit_checks,
+)
+from live.stress_test import (
+    load_stress_scenarios,
+    run_portfolio_stress_tests,
+    summarize_stress_tests,
+)
 from live.style_exposure_monitor import (
     latest_style_exposure_for_strategy,
     load_style_exposure,
@@ -163,6 +173,73 @@ def load_trade_status(
     return out
 
 
+def load_optional_csv(path: Path | None) -> pd.DataFrame | None:
+    """读取可选 CSV；不存在或未提供时返回 None。"""
+    if path is None:
+        return None
+    if not path.exists():
+        raise FileNotFoundError("未找到文件: %s" % path)
+    return pd.read_csv(path)
+
+
+def _current_weights_from_positions(
+    positions: pd.DataFrame | None,
+    latest_prices: pd.Series,
+    *,
+    cash: float,
+) -> pd.Series:
+    if positions is None or positions.empty:
+        return pd.Series(dtype=float)
+    if "symbol" not in positions.columns or "shares" not in positions.columns:
+        return pd.Series(dtype=float)
+    frame = positions.copy()
+    frame["symbol"] = frame["symbol"].astype(str)
+    frame["shares"] = pd.to_numeric(frame["shares"], errors="coerce").fillna(0.0)
+    frame["price"] = frame["symbol"].map(latest_prices.astype(float))
+    frame["value"] = frame["shares"] * pd.to_numeric(frame["price"], errors="coerce")
+    frame = frame[frame["value"].notna() & (frame["value"] > 0.0)]
+    total_asset = float(cash) + float(frame["value"].sum())
+    if total_asset <= 0.0 or frame.empty:
+        return pd.Series(dtype=float)
+    return pd.Series(
+        (frame["value"] / total_asset).to_numpy(),
+        index=frame["symbol"].astype(str),
+        dtype=float,
+    ).groupby(level=0).sum().sort_index()
+
+
+def _save_risk_limit_checks(
+    settings: Settings,
+    *,
+    strategy: str,
+    trade_date: Any,
+    checks: pd.DataFrame,
+) -> Path:
+    safe_strategy = str(strategy).replace("/", "_")
+    base = settings.output_dir / "portfolio_risk_limits" / safe_strategy
+    base.mkdir(parents=True, exist_ok=True)
+    tag = pd.Timestamp(trade_date).strftime("%Y%m%d")
+    path = base / ("daily_risk_limit_checks_%s.csv" % tag)
+    checks.to_csv(path, index=False)
+    return path
+
+
+def _save_stress_tests(
+    settings: Settings,
+    *,
+    strategy: str,
+    trade_date: Any,
+    stress_tests: pd.DataFrame,
+) -> Path:
+    safe_strategy = str(strategy).replace("/", "_")
+    base = settings.output_dir / "stress_tests" / safe_strategy
+    base.mkdir(parents=True, exist_ok=True)
+    tag = pd.Timestamp(trade_date).strftime("%Y%m%d")
+    path = base / ("daily_stress_tests_%s.csv" % tag)
+    stress_tests.to_csv(path, index=False)
+    return path
+
+
 def run_daily_paper_from_outputs(
     settings: Settings,
     *,
@@ -184,6 +261,9 @@ def run_daily_paper_from_outputs(
     style_exposure_path: Path | None = None,
     risk_gate_path: Path | None = None,
     risk_blacklist_path: Path | None = None,
+    risk_limits_path: Path | None = None,
+    stress_scenarios_path: Path | None = None,
+    industry_path: Path | None = None,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
     rebalance_path = (
@@ -216,6 +296,7 @@ def run_daily_paper_from_outputs(
     blacklist_path = risk_blacklist_path if risk_blacklist_path is not None else default_risk_blacklist_path(settings)
     risk_blacklist = active_risk_blacklist(load_risk_blacklist(blacklist_path), trade_date=run_date)
     risk_gate = load_risk_gate(risk_gate_path, trade_date=run_date)
+    industry = load_optional_csv(industry_path)
     guard_issues = (
         validate_daily_inputs(
             target_weights=target_weights,
@@ -266,6 +347,41 @@ def run_daily_paper_from_outputs(
     result["factor_health_report"] = build_factor_health_report(settings, strategy=strategy)
     result["risk_gate"] = risk_gate
     result["risk_blacklist"] = risk_blacklist
+    current_weights = _current_weights_from_positions(
+        result.get("starting_positions"),
+        latest_prices,
+        cash=float(result.get("starting_cash", 0.0)),
+    )
+    result["risk_limit_checks"] = check_risk_limits(
+        load_risk_limits(str(risk_limits_path) if risk_limits_path is not None else None),
+        target_weights,
+        trade_date=run_date,
+        current_weights=current_weights,
+        industry=industry,
+        risk_gate=risk_gate,
+        order_checks=result.get("order_checks"),
+    )
+    snapshot = result.get("account_snapshot", {})
+    result["stress_tests"] = run_portfolio_stress_tests(
+        load_stress_scenarios(str(stress_scenarios_path) if stress_scenarios_path is not None else None),
+        target_weights,
+        trade_date=run_date,
+        total_asset=float(snapshot.get("total_asset", 0.0)),
+        industry=industry,
+    )
+    if persist_outputs:
+        result.setdefault("paths", {})["risk_limit_checks"] = _save_risk_limit_checks(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            checks=result["risk_limit_checks"],
+        )
+        result.setdefault("paths", {})["stress_tests"] = _save_stress_tests(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            stress_tests=result["stress_tests"],
+        )
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
         result.setdefault("paths", {})["paper_report"] = report_path
@@ -292,6 +408,8 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     factor_health_report = result.get("factor_health_report")
     risk_gate = result.get("risk_gate")
     risk_blacklist = result.get("risk_blacklist")
+    risk_limit_checks = result.get("risk_limit_checks")
+    stress_tests = result.get("stress_tests")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -346,6 +464,10 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     lines.append("risk_gate=%s detail=%s" % (gate_status, gate_reason))
     blacklist_status, blacklist_reason = summarize_risk_blacklist_for_report(risk_blacklist)
     lines.append("risk_blacklist=%s detail=%s" % (blacklist_status, blacklist_reason))
+    risk_limit_status, risk_limit_reason = summarize_risk_limit_checks(risk_limit_checks)
+    lines.append("risk_limits=%s detail=%s" % (risk_limit_status, risk_limit_reason))
+    stress_status, stress_reason = summarize_stress_tests(stress_tests)
+    lines.append("stress_tests=%s detail=%s" % (stress_status, stress_reason))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))
@@ -386,6 +508,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="统一风险门禁 CSV；由 scripts/build_unified_risk_gate.py 生成，用于日报展示 PASS/WATCH/BLOCK 总览",
     )
+    parser.add_argument(
+        "--risk-limits",
+        type=Path,
+        default=None,
+        help="组合风险限额表 CSV；默认使用 live.risk_limits.default_risk_limits()",
+    )
+    parser.add_argument(
+        "--stress-scenarios",
+        type=Path,
+        default=None,
+        help="组合压力测试情景表 CSV；默认使用 live.stress_test.default_stress_scenarios()",
+    )
+    parser.add_argument(
+        "--industry",
+        type=Path,
+        default=None,
+        help="行业映射 CSV，含 symbol/ts_code/股票代码 与 industry/分类/行业；用于每日组合风险限额检查",
+    )
     parser.add_argument("--no-guard", action="store_true", help="跳过日终输入和结果异常检查")
     parser.add_argument("--max-price-age-days", type=int, default=7, help="价格日期距运行日期超过该天数时给出 warning")
     parser.add_argument("--no-run-control", action="store_true", help="跳过交易日日历和重复运行保护")
@@ -423,6 +563,9 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             style_exposure_path=args.style_exposure,
             risk_gate_path=args.risk_gate,
             risk_blacklist_path=args.risk_blacklist,
+            risk_limits_path=args.risk_limits,
+            stress_scenarios_path=args.stress_scenarios,
+            industry_path=args.industry,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:
         print(str(exc), file=sys.stderr)

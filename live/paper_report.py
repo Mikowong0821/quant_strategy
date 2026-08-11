@@ -13,6 +13,8 @@ from live.factor_health_report import summarize_factor_health_report
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
 from live.risk_blacklist import summarize_risk_blacklist_for_report
 from live.risk_gate import summarize_risk_gate_for_report
+from live.risk_limits import summarize_risk_limit_checks
+from live.stress_test import summarize_stress_tests
 from live.style_exposure_monitor import summarize_style_exposure_for_report
 
 
@@ -331,6 +333,138 @@ def _risk_gate_section(risk_gate: pd.DataFrame | None) -> list[str]:
     return lines
 
 
+def _risk_limit_section(risk_limit_checks: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_risk_limit_checks(risk_limit_checks)
+    lines = [
+        "## 组合风险限额",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if risk_limit_checks is None or risk_limit_checks.empty:
+        lines.extend(
+            [
+                "- 明细：未找到组合风险限额检查表；日终脚本会默认计算，也可通过 `--risk-limits` 指定自定义限额表。",
+                "",
+            ]
+        )
+        return lines
+
+    display = risk_limit_checks.copy()
+    if "status" in display.columns:
+        rank = {"BLOCK": 0, "WATCH": 1, "PASS": 2, "NA": 3}
+        display["_rank"] = display["status"].astype(str).str.upper().map(rank).fillna(9)
+        display = display.sort_values(["_rank", "category", "limit_id"]).drop(columns="_rank")
+    risky = display[display["status"].astype(str).str.upper().isin(["BLOCK", "WATCH", "NA"])]
+    lines.extend(
+        [
+            "",
+            "### 需要关注的限额",
+            "",
+            _markdown_table(
+                risky,
+                [
+                    "limit_id",
+                    "category",
+                    "status",
+                    "observed_value",
+                    "warning_threshold",
+                    "block_threshold",
+                    "details",
+                    "action",
+                ],
+                ["限额", "类别", "状态", "当前值", "提醒阈值", "阻断阈值", "说明", "处理动作"],
+                max_rows=20,
+            ),
+            "### 全部限额",
+            "",
+            _markdown_table(
+                display,
+                [
+                    "limit_id",
+                    "category",
+                    "status",
+                    "observed_value",
+                    "warning_threshold",
+                    "block_threshold",
+                    "direction",
+                    "details",
+                ],
+                ["限额", "类别", "状态", "当前值", "提醒阈值", "阻断阈值", "方向", "说明"],
+                max_rows=30,
+            ),
+        ]
+    )
+    return lines
+
+
+def _stress_test_section(stress_tests: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_stress_tests(stress_tests)
+    lines = [
+        "## 组合压力测试",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if stress_tests is None or stress_tests.empty:
+        lines.extend(
+            [
+                "- 明细：未找到组合压力测试结果；日终脚本会默认计算，也可通过 `--stress-scenarios` 指定自定义情景表。",
+                "",
+            ]
+        )
+        return lines
+
+    display = stress_tests.copy()
+    if "status" in display.columns:
+        rank = {"BLOCK": 0, "WATCH": 1, "PASS": 2, "NA": 3}
+        display["_rank"] = display["status"].astype(str).str.upper().map(rank).fillna(9)
+        display = display.sort_values(["_rank", "category", "scenario_id"]).drop(columns="_rank")
+    risky = display[display["status"].astype(str).str.upper().isin(["BLOCK", "WATCH", "NA"])]
+    lines.extend(
+        [
+            "",
+            "### 需要关注的压力情景",
+            "",
+            _markdown_table(
+                risky,
+                [
+                    "scenario_id",
+                    "category",
+                    "status",
+                    "shock_value",
+                    "affected_weight",
+                    "estimated_loss_pct",
+                    "estimated_loss_amount",
+                    "details",
+                    "action",
+                ],
+                ["情景", "类别", "状态", "冲击", "受影响权重", "预估损失率", "预估损失金额", "说明", "处理动作"],
+                max_rows=20,
+            ),
+            "### 全部压力情景",
+            "",
+            _markdown_table(
+                display,
+                [
+                    "scenario_id",
+                    "category",
+                    "status",
+                    "shock_value",
+                    "affected_weight",
+                    "estimated_loss_pct",
+                    "warning_loss",
+                    "block_loss",
+                    "affected_symbols",
+                ],
+                ["情景", "类别", "状态", "冲击", "受影响权重", "预估损失率", "提醒阈值", "阻断阈值", "标的"],
+                max_rows=30,
+            ),
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -357,6 +491,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     factor_health_report = result.get("factor_health_report")
     risk_gate = result.get("risk_gate")
     risk_blacklist = result.get("risk_blacklist")
+    risk_limit_checks = result.get("risk_limit_checks")
+    stress_tests = result.get("stress_tests")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -413,6 +549,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     lines.extend(_enhanced_factor_health_section(factor_health_report))
     lines.extend(_risk_gate_section(risk_gate))
     lines.extend(_risk_blacklist_section(risk_blacklist))
+    lines.extend(_risk_limit_section(risk_limit_checks))
+    lines.extend(_stress_test_section(stress_tests))
 
     blocked = checks[checks["check_status"] == "BLOCK"] if not checks.empty else checks
     lines.extend(

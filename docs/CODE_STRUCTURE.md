@@ -26,6 +26,8 @@ flowchart LR
   sig[live/signal_system]
   order[live/order_builder]
   precheck[live/order_precheck]
+  limits[live/risk_limits]
+  stress[live/stress_test]
   broker[live/broker]
   paper[live/paper_trading]
   state[live/account_state]
@@ -68,6 +70,9 @@ flowchart LR
   bt --> plot
   bt --> order
   order --> precheck
+  order --> limits
+  precheck --> limits
+  order --> stress
   precheck --> broker
   fac --> opt
   opt --> sig
@@ -83,6 +88,7 @@ flowchart LR
   guard --> runner
   scheduler --> cli
   health --> cli
+  stress --> cli
   runner --> guard
   runner --> order
   cli --> runner
@@ -195,20 +201,22 @@ flowchart LR
 | `event_risk_filter.py` | **公告事件风险过滤**：从公告事件表中识别问询、处罚、立案、诉讼、退市风险等负面事件，生成 `BLACKLIST/WATCH` 风险候选，并可转换为黑名单文件。 |
 | `negative_sentiment_filter.py` | **新闻 / 舆情入口与负面过滤**：读取外部新闻 / 舆情 CSV/XLSX，统一股票代码、发布时间、标题、正文、来源、链接和情绪分，并按情绪分或负面关键词生成 `BLACKLIST/WATCH` 风险候选，可转换为黑名单文件。 |
 | `risk_gate.py` | **统一风险门禁**：合并人工黑名单、公告风险候选和负面舆情候选，按 `BLOCK > WATCH > PASS` 输出统一门禁表，并可导出订单预检查可读取的 `risk_blacklist`。 |
+| `risk_limits.py` | **统一风险限额表**：把单票、Top3、effective_n、最低持仓数、现金缓冲、行业权重、换手、风险门禁和订单阻断等组合层指标统一检查成 `PASS/WATCH/BLOCK/NA`。 |
+| `stress_test.py` | **组合压力测试**：对目标组合施加市场下跌、第一大持仓下跌、前三大持仓下跌和第一大行业下跌等情景，估算组合损失并输出 `PASS/WATCH/BLOCK/NA`。 |
 | `broker.py` | **统一券商接口协议**：定义 `BrokerAdapter`、`BrokerAccount`、`BrokerPosition`、`BrokerOrder`、`SimulatedBroker` 与 `RealBrokerReadOnlyAdapter`，把查资金、查持仓、查订单、下单、撤单抽象成统一方法。模拟券商用于验证协议；真实券商先用只读 adapter 验证账户、持仓和订单读取。 |
 | `broker_factory.py` | **券商通道选择入口**：根据 `broker_mode/broker_provider/account_id` 创建模拟或只读 Adapter；后续 QMT、PTrade、掘金接入都应注册到这一层，真实交易模式当前明确阻断。 |
 | `broker_reconcile.py` | **纸面 / 真实账户只读对账**：比较纸面账户与只读券商账户的现金、总资产、持仓股数和可用股数差异，输出账户差异、持仓差异和 Markdown 对账报告。 |
 | `signal_system.py` | **信号生成**：将因子得分或融合结果变成离散买卖信号（或目标仓位），规则可与回测层对齐以减少「回测一套、实盘一套」。 |
 | `paper_trading.py` | **纸面交易**：按订单计划与预检查结果更新虚拟现金和持仓，记录 `FILLED/SKIPPED`、手续费、现金变化与持仓变化；用于在接近实盘的流程下验证逻辑，**不等同**于已接入券商 API 的真实下单。 |
 | `paper_runner.py` | **每日纸面运行器**：读取纸面账户状态，串联订单生成、订单预检查、执行模式选择、成交回报兼容、持仓更新、账户快照和落盘；默认走旧纸面成交，也可通过 `simulated_broker` 走统一券商接口。 |
-| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子失效监控、增强因子健康总览、风格暴露、统一风险门禁、风险黑名单、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
+| `paper_report.py` | **纸面交易日报**：把单日纸面运行结果整理成 Markdown，包含运行摘要、执行模式、账户快照、因子失效监控、增强因子健康总览、风格暴露、统一风险门禁、风险黑名单、组合风险限额、组合压力测试、订单、阻断原因、成交、券商订单回报、持仓和输出文件路径。 |
 | `factor_health_report.py` | **增强因子健康总览**：读取样本外失效、滚动样本外、因子准入、冗余、权重漂移和牛熊市分段 CSV，压缩成日终纸面交易日报可读的健康摘要；只展示，不重新计算研究指标。 |
 | `manual_confirmation.py` | **小资金人工确认实盘单**：基于订单计划、预检查和可选因子失效监控生成 CSV / Markdown 确认单，预留真实执行回填字段；只辅助人工下单，不自动连接券商。 |
 | `execution_feedback.py` | **真实成交回填与执行偏差分析**：读取人工确认单中的真实成交回填字段，对比系统建议数量、价格、金额和实际执行结果，输出逐笔偏差、成交状态和汇总报告。 |
 | `paper_guard.py` | **运行失败 / 异常检查**：在日终纸面运行前后检查目标权重、价格、日期、现金、持仓、订单检查和成交日志；ERROR 阻断，WARNING 进入摘要和日报。 |
 | `paper_run_control.py` | **交易日日历 / 重复运行保护**：从价格缓存提取交易日日历，默认阻断非交易日运行；检查同日纸面账户快照，默认阻断重复覆盖。 |
 | `paper_scheduler.py` | **每日调度封装**：运行一次日终纸面交易并记录 stdout、stderr、参数和退出码，供 cron / launchd / 服务器调度器调用。 |
-| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报、增强因子健康总览和风险黑名单摘要；支持 `--risk-blacklist` 与 `--execution-mode simulated_broker`。 |
+| `daily_paper_cli.py` | **日终纸面交易辅助逻辑**：从 `output/rebalance_logs` 和 `output/cache/prices_wide_close.csv` 读取最近目标权重与最新价格，调用运行控制、异常检查和每日纸面运行器，生成命令行摘要，并默认写 Markdown 日报、增强因子健康总览、风险黑名单摘要、组合风险限额和组合压力测试；支持 `--risk-blacklist`、`--risk-limits`、`--stress-scenarios` 与 `--execution-mode simulated_broker`。 |
 
 ## 8.1 `scripts/`：日常运行入口
 
@@ -229,6 +237,8 @@ flowchart LR
 | `build_negative_sentiment_filter.py` | **负面舆情过滤入口**：读取新闻 / 舆情 CSV/XLSX，输出负面风险候选表，并可选导出日终纸面交易可读取的黑名单文件。 |
 | `build_negative_sentiment_filter_backtest.py` | **负面舆情风险门禁回测**：不把新闻作为 alpha 加分，而是在调仓日前把仍处于 `BLACKLIST/WATCH` 有效期的股票从候选中剔除，对比过滤前后组合表现。 |
 | `build_unified_risk_gate.py` | **统一风险门禁入口**：读取股票池、公告风险候选、负面舆情候选和人工黑名单，输出 `risk_gate_<date>.csv`、风险明细和可选 `risk_blacklist_<date>.csv`。 |
+| `build_portfolio_risk_limits.py` | **统一风险限额检查入口**：读取目标权重、可选当前权重、行业映射、风险门禁和订单预检查结果，输出组合层 `PASS/WATCH/BLOCK/NA` 风险限额检查表和 Markdown 摘要。 |
+| `build_portfolio_stress_tests.py` | **组合压力测试入口**：读取目标权重、可选行业映射和压力测试情景表，输出压力测试 CSV 与 Markdown 摘要。 |
 
 **本层**是「研究与生产之间的缓冲带」：接口稳定后，真实实盘可在同结构下替换撮合与下单实现。
 
@@ -254,7 +264,7 @@ flowchart LR
 5. `analysis/plotting.py` → `plot_nav` / `plot_ic` / `plot_weights` 与 `rebalance_log_to_weights_frame`。  
 6. `backtest/backtest_multi.py` + `models/fusion.py` → 多因子接入回测。  
 7. `analysis/ic.py`、`analysis/data_quality.py`、`analysis/factor_diagnostics.py`、`analysis/performance.py`、`analysis/benchmark.py`、`analysis/turnover.py`、`analysis/risk_exposure.py` → IC 分布稳定性、数据质量、因子多头超额、分组收益、绩效、基准、超额收益、换手与成本、集中度。
-8. `live/` → 数据接入、订单生成、订单预检查、券商通道选择、纸面交易、账户状态、每日纸面运行器、纸面交易日报、增强因子健康总览、人工确认单、真实成交回填、运行异常检查、交易日日历 / 重复运行保护、每日调度封装与日终脚本辅助逻辑；信号生成仍是占位。
+8. `live/` → 数据接入、订单生成、订单预检查、统一风险限额检查、券商通道选择、纸面交易、账户状态、每日纸面运行器、纸面交易日报、增强因子健康总览、人工确认单、真实成交回填、运行异常检查、交易日日历 / 重复运行保护、每日调度封装与日终脚本辅助逻辑；信号生成仍是占位。
 9. `scripts/` → 日常运行入口，例如日终纸面交易命令和真实成交回填报告命令。
 
 **文档与代码**需人工同步；无 CI 自动 diff。改 `main` 或契约时请更新 `docs/` 与 `README.md`。

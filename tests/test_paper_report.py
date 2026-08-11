@@ -271,6 +271,97 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("- 整体状态：`BLOCK`", report)
             self.assertIn("| AAA | 测试股票 | BLOCK | 2 |", report)
 
+    def test_report_includes_portfolio_risk_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["risk_limit_checks"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "limit_id": "max_single_position_weight",
+                        "category": "portfolio",
+                        "metric": "max_single_position_weight",
+                        "status": "BLOCK",
+                        "observed_value": 0.5,
+                        "warning_threshold": 0.3,
+                        "block_threshold": 0.4,
+                        "direction": "max",
+                        "unit": "weight",
+                        "description": "单票过高",
+                        "action": "降低单票权重",
+                        "details": "top=AAA 50.00%",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 组合风险限额", report)
+            self.assertIn("- 整体状态：`BLOCK`", report)
+            self.assertIn("| max_single_position_weight | portfolio | BLOCK | 0.5000 |", report)
+
+    def test_report_includes_portfolio_stress_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["stress_tests"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "scenario_id": "largest_position_down_10pct",
+                        "category": "single_name",
+                        "shock_type": "largest_position_down",
+                        "status": "BLOCK",
+                        "shock_value": -0.1,
+                        "affected_weight": 0.5,
+                        "estimated_portfolio_return": -0.05,
+                        "estimated_loss_pct": 0.05,
+                        "estimated_loss_amount": 500.0,
+                        "warning_loss": 0.02,
+                        "block_loss": 0.04,
+                        "affected_symbols": "AAA",
+                        "description": "单票冲击",
+                        "action": "降低单票权重",
+                        "details": "largest=AAA",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 组合压力测试", report)
+            self.assertIn("- 整体状态：`BLOCK`", report)
+            self.assertIn("| largest_position_down_10pct | single_name | BLOCK |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

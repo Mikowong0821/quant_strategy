@@ -279,6 +279,42 @@ class TestDailyPaperCli(unittest.TestCase):
             self.assertIn("## 统一风险门禁", report)
             self.assertIn("| AAA | 测试股票 | WATCH | 1 |", report)
 
+    def test_run_from_outputs_adds_portfolio_risk_limits_to_report_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            (settings.output_dir / "rebalance_logs").mkdir(parents=True)
+            (settings.output_dir / "cache").mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "symbol": "AAA", "weight": 0.5, "selected": True},
+                ]
+            ).to_csv(settings.output_dir / "rebalance_logs" / "TEST.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"date": "2024-01-31", "AAA": 10.0},
+                ]
+            ).to_csv(settings.output_dir / "cache" / "prices_wide_close.csv", index=False)
+
+            result = run_daily_paper_from_outputs(settings, strategy="TEST")
+            summary = format_daily_paper_summary(result)
+            report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
+            report = report_path.read_text(encoding="utf-8")
+            risk_path = settings.output_dir / "portfolio_risk_limits" / "TEST" / "daily_risk_limit_checks_20240131.csv"
+
+            self.assertIn("risk_limits=BLOCK", summary)
+            self.assertIn("stress_tests=BLOCK", summary)
+            self.assertIn("max_single_position_weight", report)
+            self.assertIn("## 组合压力测试", report)
+            self.assertTrue(risk_path.is_file())
+            self.assertTrue((settings.output_dir / "stress_tests" / "TEST" / "daily_stress_tests_20240131.csv").is_file())
+            self.assertEqual(str(result["risk_limit_checks"].set_index("limit_id").loc["max_single_position_weight", "status"]), "BLOCK")
+
     def test_run_from_outputs_can_use_simulated_broker(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = replace(
