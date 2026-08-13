@@ -9,6 +9,8 @@ from typing import Any, Iterable
 import pandas as pd
 
 from config import Settings
+from live.capacity_impact import summarize_capacity_impact
+from live.drawdown_control import summarize_drawdown_control
 from live.factor_health_report import summarize_factor_health_report
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
 from live.risk_blacklist import summarize_risk_blacklist_for_report
@@ -465,6 +467,114 @@ def _stress_test_section(stress_tests: pd.DataFrame | None) -> list[str]:
     return lines
 
 
+def _drawdown_control_section(drawdown_control: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_drawdown_control(drawdown_control)
+    lines = [
+        "## 回撤止损与降仓控制",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if drawdown_control is None or drawdown_control.empty:
+        lines.extend(
+            [
+                "- 明细：未找到回撤控制结果；日终脚本会默认计算，也可通过 `--drawdown-rules` 指定自定义规则表。",
+                "",
+            ]
+        )
+        return lines
+
+    display = drawdown_control.copy()
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                [
+                    "status",
+                    "action",
+                    "current_total_asset",
+                    "peak_total_asset",
+                    "drawdown_abs",
+                    "target_exposure_before",
+                    "target_exposure_after",
+                    "target_weight_scale",
+                    "triggered_rule_id",
+                    "details",
+                ],
+                ["状态", "动作", "当前资产", "历史峰值", "当前回撤", "原目标仓位", "降仓后仓位", "缩放", "触发规则", "说明"],
+                max_rows=5,
+            ),
+        ]
+    )
+    return lines
+
+
+def _capacity_impact_section(
+    capacity_detail: pd.DataFrame | None,
+    capacity_summary: pd.DataFrame | None,
+) -> list[str]:
+    status, detail = summarize_capacity_impact(capacity_summary)
+    lines = [
+        "## 容量与冲击成本",
+        "",
+        "- 整体状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if capacity_summary is None or capacity_summary.empty:
+        lines.extend(
+            [
+                "- 明细：未找到容量与冲击成本结果；日终脚本会默认读取 `output/cache/prices_long.csv`，也可通过 `--liquidity-history` 指定。",
+                "",
+            ]
+        )
+        return lines
+
+    lines.extend(
+        [
+            "",
+            "### 总览",
+            "",
+            _markdown_table(
+                capacity_summary,
+                [
+                    "status",
+                    "n_orders",
+                    "n_with_liquidity",
+                    "n_missing_liquidity",
+                    "max_participation_rate",
+                    "total_order_amount",
+                    "estimated_impact_cost_amount",
+                    "estimated_impact_cost_bps",
+                    "portfolio_capacity_multiplier_at_warning",
+                ],
+                ["状态", "订单数", "有流动性数据", "缺流动性数据", "最大参与率", "订单总金额", "估算冲击成本", "估算冲击bps", "容量倍数"],
+                max_rows=5,
+            ),
+            "### 逐订单估算",
+            "",
+            _markdown_table(
+                capacity_detail if capacity_detail is not None else pd.DataFrame(),
+                [
+                    "symbol",
+                    "side",
+                    "estimated_amount",
+                    "avg_amount",
+                    "participation_rate",
+                    "impact_cost_bps",
+                    "impact_cost_amount",
+                    "capacity_multiplier_at_warning",
+                    "status",
+                    "details",
+                ],
+                ["标的", "方向", "订单金额", "平均成交额", "参与率", "冲击bps", "冲击金额", "容量倍数", "状态", "说明"],
+                max_rows=30,
+            ),
+        ]
+    )
+    return lines
+
+
 def build_daily_paper_report(result: dict[str, Any]) -> str:
     """根据 `run_daily_paper_trade` / `run_daily_paper_from_outputs` 结果生成 Markdown。"""
     strategy = str(result["strategy"])
@@ -493,6 +603,9 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     risk_blacklist = result.get("risk_blacklist")
     risk_limit_checks = result.get("risk_limit_checks")
     stress_tests = result.get("stress_tests")
+    drawdown_control = result.get("drawdown_control")
+    capacity_impact = result.get("capacity_impact")
+    capacity_impact_summary = result.get("capacity_impact_summary")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -549,6 +662,8 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     lines.extend(_enhanced_factor_health_section(factor_health_report))
     lines.extend(_risk_gate_section(risk_gate))
     lines.extend(_risk_blacklist_section(risk_blacklist))
+    lines.extend(_drawdown_control_section(drawdown_control))
+    lines.extend(_capacity_impact_section(capacity_impact, capacity_impact_summary))
     lines.extend(_risk_limit_section(risk_limit_checks))
     lines.extend(_stress_test_section(stress_tests))
 

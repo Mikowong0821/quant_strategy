@@ -41,10 +41,11 @@ def validate_daily_inputs(
     target_date: Any,
     price_date: Any,
     max_price_age_days: int = 7,
+    allow_empty_target: bool = False,
 ) -> list[GuardIssue]:
     """检查日终纸面交易输入。"""
     issues: list[GuardIssue] = []
-    if target_weights.empty:
+    if target_weights.empty and not allow_empty_target:
         issues.append(_issue("ERROR", "empty_target_weights", "目标权重为空"))
     if latest_prices.empty:
         issues.append(_issue("ERROR", "empty_latest_prices", "最新价格为空"))
@@ -55,7 +56,7 @@ def validate_daily_inputs(
     if (weights < -1e-12).any():
         issues.append(_issue("ERROR", "negative_target_weight", "目标权重不能为负"))
     weight_sum = float(weights.fillna(0.0).sum())
-    if weight_sum <= 1e-12:
+    if weight_sum <= 1e-12 and not allow_empty_target:
         issues.append(_issue("ERROR", "zero_target_weight_sum", "目标权重之和为 0"))
     if weight_sum > 1.0 + 1e-8:
         issues.append(_issue("ERROR", "target_weight_sum_gt_one", "目标权重之和超过 1"))

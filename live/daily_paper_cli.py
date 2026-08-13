@@ -13,6 +13,21 @@ from typing import Any, Sequence
 import pandas as pd
 
 from config import Settings, get_settings
+from live.account_state import load_account_state
+from live.capacity_impact import (
+    evaluate_capacity_impact,
+    load_capacity_rules,
+    load_liquidity_history,
+    summarize_capacity_impact,
+)
+from live.drawdown_control import (
+    apply_drawdown_control_to_weights,
+    build_current_account_snapshot,
+    evaluate_drawdown_control,
+    load_account_snapshots,
+    load_drawdown_rules,
+    summarize_drawdown_control,
+)
 from live.factor_health_report import (
     build_factor_health_report,
     summarize_factor_health_report,
@@ -240,6 +255,41 @@ def _save_stress_tests(
     return path
 
 
+def _save_drawdown_control(
+    settings: Settings,
+    *,
+    strategy: str,
+    trade_date: Any,
+    control: pd.DataFrame,
+) -> Path:
+    safe_strategy = str(strategy).replace("/", "_")
+    base = settings.output_dir / "drawdown_control" / safe_strategy
+    base.mkdir(parents=True, exist_ok=True)
+    tag = pd.Timestamp(trade_date).strftime("%Y%m%d")
+    path = base / ("daily_drawdown_control_%s.csv" % tag)
+    control.to_csv(path, index=False)
+    return path
+
+
+def _save_capacity_impact(
+    settings: Settings,
+    *,
+    strategy: str,
+    trade_date: Any,
+    detail: pd.DataFrame,
+    summary: pd.DataFrame,
+) -> dict[str, Path]:
+    safe_strategy = str(strategy).replace("/", "_")
+    base = settings.output_dir / "capacity_impact" / safe_strategy
+    base.mkdir(parents=True, exist_ok=True)
+    tag = pd.Timestamp(trade_date).strftime("%Y%m%d")
+    detail_path = base / ("daily_capacity_impact_detail_%s.csv" % tag)
+    summary_path = base / ("daily_capacity_impact_summary_%s.csv" % tag)
+    detail.to_csv(detail_path, index=False)
+    summary.to_csv(summary_path, index=False)
+    return {"detail": detail_path, "summary": summary_path}
+
+
 def run_daily_paper_from_outputs(
     settings: Settings,
     *,
@@ -263,6 +313,11 @@ def run_daily_paper_from_outputs(
     risk_blacklist_path: Path | None = None,
     risk_limits_path: Path | None = None,
     stress_scenarios_path: Path | None = None,
+    drawdown_rules_path: Path | None = None,
+    capacity_rules_path: Path | None = None,
+    liquidity_history_path: Path | None = None,
+    capacity_lookback_days: int | None = None,
+    impact_coefficient_bps: float = 100.0,
     industry_path: Path | None = None,
 ) -> dict[str, Any]:
     """从 output/ 下已有文件读取输入并执行单日纸面交易。"""
@@ -275,6 +330,11 @@ def run_daily_paper_from_outputs(
         prices_path
         if prices_path is not None
         else settings.output_dir / "cache" / "prices_wide_close.csv"
+    )
+    liquidity_path = (
+        liquidity_history_path
+        if liquidity_history_path is not None
+        else settings.output_dir / "cache" / "prices_long.csv"
     )
 
     requested_date = pd.Timestamp(trade_date) if trade_date is not None else None
@@ -297,14 +357,33 @@ def run_daily_paper_from_outputs(
     risk_blacklist = active_risk_blacklist(load_risk_blacklist(blacklist_path), trade_date=run_date)
     risk_gate = load_risk_gate(risk_gate_path, trade_date=run_date)
     industry = load_optional_csv(industry_path)
+    starting_cash, starting_positions = load_account_state(
+        settings,
+        strategy=strategy,
+        default_cash=settings.paper_initial_cash,
+    )
+    drawdown_control = evaluate_drawdown_control(
+        load_drawdown_rules(str(drawdown_rules_path) if drawdown_rules_path is not None else None),
+        load_account_snapshots(settings, strategy=strategy),
+        build_current_account_snapshot(
+            cash=starting_cash,
+            positions=starting_positions,
+            latest_prices=latest_prices,
+        ),
+        target_weights,
+        trade_date=run_date,
+    )
+    target_weights_after_drawdown = apply_drawdown_control_to_weights(target_weights, drawdown_control)
     guard_issues = (
         validate_daily_inputs(
-            target_weights=target_weights,
+            target_weights=target_weights_after_drawdown,
             latest_prices=latest_prices,
             run_date=run_date,
             target_date=target_date,
             price_date=price_date,
             max_price_age_days=max_price_age_days,
+            allow_empty_target=target_weights_after_drawdown.empty
+            and float(drawdown_control["target_weight_scale"].iloc[0]) <= 1e-12,
         )
         if run_guard
         else []
@@ -314,7 +393,7 @@ def run_daily_paper_from_outputs(
     result = run_daily_paper_trade(
         settings,
         strategy=strategy,
-        target_weights=target_weights,
+        target_weights=target_weights_after_drawdown,
         latest_prices=latest_prices,
         trade_date=run_date,
         trade_status=trade_status,
@@ -328,9 +407,15 @@ def run_daily_paper_from_outputs(
         "trade_status": trade_status_path,
         "risk_gate": risk_gate_path if risk_gate_path is not None and risk_gate_path.exists() else None,
         "risk_blacklist": blacklist_path if blacklist_path.exists() else None,
+        "drawdown_rules": drawdown_rules_path if drawdown_rules_path is not None and drawdown_rules_path.exists() else None,
+        "capacity_rules": capacity_rules_path if capacity_rules_path is not None and capacity_rules_path.exists() else None,
+        "liquidity_history": liquidity_path if liquidity_path.exists() else None,
     }
     result["target_date"] = target_date
     result["price_date"] = price_date
+    result["target_weights_before_drawdown"] = target_weights
+    result["target_weights_after_drawdown"] = target_weights_after_drawdown
+    result["drawdown_control"] = drawdown_control
     result["trading_calendar_latest_date"] = trading_calendar[-1]
     if run_guard:
         guard_issues.extend(validate_daily_result(result))
@@ -347,6 +432,18 @@ def run_daily_paper_from_outputs(
     result["factor_health_report"] = build_factor_health_report(settings, strategy=strategy)
     result["risk_gate"] = risk_gate
     result["risk_blacklist"] = risk_blacklist
+    capacity_detail, capacity_summary = evaluate_capacity_impact(
+        result.get("orders"),
+        load_liquidity_history(liquidity_path),
+        trade_date=run_date,
+        rules=load_capacity_rules(str(capacity_rules_path) if capacity_rules_path is not None else None),
+        lookback_days=capacity_lookback_days
+        if capacity_lookback_days is not None
+        else int(getattr(settings, "liquidity_lookback_days", 20) or 20),
+        impact_coefficient_bps=impact_coefficient_bps,
+    )
+    result["capacity_impact"] = capacity_detail
+    result["capacity_impact_summary"] = capacity_summary
     current_weights = _current_weights_from_positions(
         result.get("starting_positions"),
         latest_prices,
@@ -354,7 +451,7 @@ def run_daily_paper_from_outputs(
     )
     result["risk_limit_checks"] = check_risk_limits(
         load_risk_limits(str(risk_limits_path) if risk_limits_path is not None else None),
-        target_weights,
+        target_weights_after_drawdown,
         trade_date=run_date,
         current_weights=current_weights,
         industry=industry,
@@ -364,12 +461,25 @@ def run_daily_paper_from_outputs(
     snapshot = result.get("account_snapshot", {})
     result["stress_tests"] = run_portfolio_stress_tests(
         load_stress_scenarios(str(stress_scenarios_path) if stress_scenarios_path is not None else None),
-        target_weights,
+        target_weights_after_drawdown,
         trade_date=run_date,
         total_asset=float(snapshot.get("total_asset", 0.0)),
         industry=industry,
     )
     if persist_outputs:
+        result.setdefault("paths", {})["drawdown_control"] = _save_drawdown_control(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            control=result["drawdown_control"],
+        )
+        result.setdefault("paths", {})["capacity_impact"] = _save_capacity_impact(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            detail=result["capacity_impact"],
+            summary=result["capacity_impact_summary"],
+        )
         result.setdefault("paths", {})["risk_limit_checks"] = _save_risk_limit_checks(
             settings,
             strategy=strategy,
@@ -410,6 +520,8 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     risk_blacklist = result.get("risk_blacklist")
     risk_limit_checks = result.get("risk_limit_checks")
     stress_tests = result.get("stress_tests")
+    drawdown_control = result.get("drawdown_control")
+    capacity_impact_summary = result.get("capacity_impact_summary")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -468,6 +580,10 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     lines.append("risk_limits=%s detail=%s" % (risk_limit_status, risk_limit_reason))
     stress_status, stress_reason = summarize_stress_tests(stress_tests)
     lines.append("stress_tests=%s detail=%s" % (stress_status, stress_reason))
+    drawdown_status, drawdown_reason = summarize_drawdown_control(drawdown_control)
+    lines.append("drawdown_control=%s detail=%s" % (drawdown_status, drawdown_reason))
+    capacity_status, capacity_reason = summarize_capacity_impact(capacity_impact_summary)
+    lines.append("capacity_impact=%s detail=%s" % (capacity_status, capacity_reason))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))
@@ -521,6 +637,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="组合压力测试情景表 CSV；默认使用 live.stress_test.default_stress_scenarios()",
     )
     parser.add_argument(
+        "--drawdown-rules",
+        type=Path,
+        default=None,
+        help="账户回撤止损与降仓规则 CSV；默认使用 live.drawdown_control.default_drawdown_rules()",
+    )
+    parser.add_argument(
+        "--capacity-rules",
+        type=Path,
+        default=None,
+        help="容量与冲击成本规则 CSV；默认使用 live.capacity_impact.default_capacity_rules()",
+    )
+    parser.add_argument(
+        "--liquidity-history",
+        type=Path,
+        default=None,
+        help="流动性历史 CSV，含 date/trade_date、symbol/ts_code、amount/turnover；默认 output/cache/prices_long.csv",
+    )
+    parser.add_argument("--capacity-lookback-days", type=int, default=None, help="容量估算平均成交额窗口；默认 Settings.liquidity_lookback_days")
+    parser.add_argument("--impact-coefficient-bps", type=float, default=100.0, help="冲击成本估算系数，默认 100 bps * sqrt(参与率)")
+    parser.add_argument(
         "--industry",
         type=Path,
         default=None,
@@ -565,6 +701,11 @@ def run_daily_paper_from_args(settings: Settings, args: argparse.Namespace) -> i
             risk_blacklist_path=args.risk_blacklist,
             risk_limits_path=args.risk_limits,
             stress_scenarios_path=args.stress_scenarios,
+            drawdown_rules_path=args.drawdown_rules,
+            capacity_rules_path=args.capacity_rules,
+            liquidity_history_path=args.liquidity_history,
+            capacity_lookback_days=args.capacity_lookback_days,
+            impact_coefficient_bps=args.impact_coefficient_bps,
             industry_path=args.industry,
         )
     except (DailyPaperGuardError, DailyPaperRunControlError) as exc:

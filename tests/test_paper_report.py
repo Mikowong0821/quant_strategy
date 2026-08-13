@@ -362,6 +362,114 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("- 整体状态：`BLOCK`", report)
             self.assertIn("| largest_position_down_10pct | single_name | BLOCK |", report)
 
+    def test_report_includes_drawdown_control(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["drawdown_control"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "status": "WATCH",
+                        "action": "REDUCE_EXPOSURE",
+                        "current_total_asset": 9200.0,
+                        "peak_total_asset": 10000.0,
+                        "current_drawdown": -0.08,
+                        "drawdown_abs": 0.08,
+                        "previous_total_asset": 9800.0,
+                        "latest_return": -0.0612,
+                        "current_exposure": 0.89,
+                        "target_exposure_before": 0.8,
+                        "target_exposure_after": 0.56,
+                        "target_weight_scale": 0.7,
+                        "triggered_rule_id": "drawdown_watch_5pct",
+                        "description": "回撤观察",
+                        "details": "drawdown=8.00%",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 回撤止损与降仓控制", report)
+            self.assertIn("- 整体状态：`WATCH`", report)
+            self.assertIn("| WATCH | REDUCE_EXPOSURE | 9200.0000 |", report)
+
+    def test_report_includes_capacity_impact(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["capacity_impact"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "symbol": "AAA",
+                        "side": "BUY",
+                        "estimated_amount": 5000.0,
+                        "avg_amount": 1000000.0,
+                        "participation_rate": 0.005,
+                        "impact_cost_bps": 7.0711,
+                        "impact_cost_amount": 3.5355,
+                        "max_order_amount_at_warning": 50000.0,
+                        "capacity_multiplier_at_warning": 10.0,
+                        "status": "PASS",
+                        "details": "amount=5000.00",
+                    }
+                ]
+            )
+            result["capacity_impact_summary"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "status": "PASS",
+                        "n_orders": 1,
+                        "n_with_liquidity": 1,
+                        "n_missing_liquidity": 0,
+                        "max_participation_rate": 0.005,
+                        "total_order_amount": 5000.0,
+                        "estimated_impact_cost_amount": 3.5355,
+                        "estimated_impact_cost_bps": 7.0711,
+                        "portfolio_capacity_multiplier_at_warning": 10.0,
+                        "details": "lookback=20",
+                    }
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 容量与冲击成本", report)
+            self.assertIn("- 整体状态：`PASS`", report)
+            self.assertIn("| PASS | 1 | 1 | 0 | 0.0050 |", report)
+            self.assertIn("| AAA | BUY | 5000.0000 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()
