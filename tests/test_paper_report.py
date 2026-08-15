@@ -470,6 +470,51 @@ class TestPaperReport(unittest.TestCase):
             self.assertIn("| PASS | 1 | 1 | 0 | 0.0050 |", report)
             self.assertIn("| AAA | BUY | 5000.0000 |", report)
 
+    def test_report_includes_risk_control_report(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = replace(
+                get_settings(),
+                output_dir=Path(td) / "output",
+                data_dir=Path(td) / "data",
+                paper_initial_cash=10_000.0,
+                commission_rate=0.0,
+            )
+            result = run_daily_paper_trade(
+                settings,
+                strategy="REPORT",
+                target_weights={"AAA": 0.5},
+                latest_prices={"AAA": 10.0},
+                trade_date="2024-01-31",
+            )
+            result["target_date"] = pd.Timestamp("2024-01-31")
+            result["price_date"] = pd.Timestamp("2024-01-31")
+            result["risk_control_report"] = pd.DataFrame(
+                [
+                    {
+                        "trade_date": "2024-01-31",
+                        "module": "组合风险限额",
+                        "status": "BLOCK",
+                        "severity_rank": 0,
+                        "summary": "max_single_position_weight",
+                        "action": "暂停自动执行，先人工复核或重新生成订单。",
+                    },
+                    {
+                        "trade_date": "2024-01-31",
+                        "module": "容量与冲击成本",
+                        "status": "PASS",
+                        "severity_rank": 3,
+                        "summary": "全部通过",
+                        "action": "无需额外动作，继续监控。",
+                    },
+                ]
+            )
+
+            report = build_daily_paper_report(result)
+
+            self.assertIn("## 风险总控日报", report)
+            self.assertIn("- 总控状态：`BLOCK`", report)
+            self.assertIn("| 组合风险限额 | BLOCK | max_single_position_weight |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

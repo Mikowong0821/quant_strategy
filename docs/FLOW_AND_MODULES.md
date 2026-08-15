@@ -1,6 +1,6 @@
 # 主流程与各模块说明（含流程图）
 
-本文描述从 `main.py` 入口到 **因子清洗与行业内标准化 → 数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`live.order_builder`、`live.drawdown_control`、`live.capacity_impact`、`live.order_precheck`、`live.risk_gate`、`live.risk_limits`、`live.stress_test`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.factor_health_report`、`live.style_exposure_monitor`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_unified_risk_gate.py` / `scripts/build_drawdown_control.py` / `scripts/build_capacity_impact.py` / `scripts/build_portfolio_risk_limits.py` / `scripts/build_portfolio_stress_tests.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、合并公告 / 舆情 / 人工黑名单风险门禁、检查账户级回撤止损与降仓、估算订单容量与冲击成本、检查组合层统一风险限额、做组合压力测试、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成带因子健康、增强因子健康总览、风格暴露、回撤控制、容量冲击、风险限额和压力测试的日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
+本文描述从 `main.py` 入口到 **数据存储工程化 → 因子清洗与行业内标准化 → 数据质量 → IC（含驱动融合列权）→ 因子诊断（Top-K 多头超额 + 分组收益单调性）→ 多因子权重建议 → 样本外验证与因子失效监控 → 因子入选与剔除 → 因子相关性与冗余分析 → 因子分层与复合因子 → 回测（因子 Top-K → 等权 / 夏普 / 风险平价配权）→ 风格层暴露与收益关联 → 基准与超额收益 → 换手与成本 → 风险暴露与集中度 → 绩效与落盘** 的顺序，以及各目录模块在流程中的位置与职责。与 [INTERFACE_AND_CONTRACTS.md](./INTERFACE_AND_CONTRACTS.md) 互补。**下文主体是 MVP 研究回测主流程**；`storage.database` 已作为本地 SQLite 基础数据层，先定义行情、财务、因子、公告、新闻和股票池快照表；`live.order_builder`、`live.drawdown_control`、`live.capacity_impact`、`live.order_precheck`、`live.risk_gate`、`live.risk_limits`、`live.stress_test`、`live.risk_control_report`、`live.paper_trading`、`live.broker`、`live.account_state`、`live.paper_runner`、`live.paper_report`、`live.factor_health_report`、`live.style_exposure_monitor`、`live.manual_confirmation`、`live.execution_feedback`、`live.paper_guard`、`live.paper_run_control`、`live.paper_scheduler` 与 `scripts/run_daily_paper.py` / `scripts/run_scheduled_daily_paper.py` / `scripts/build_unified_risk_gate.py` / `scripts/build_drawdown_control.py` / `scripts/build_capacity_impact.py` / `scripts/build_portfolio_risk_limits.py` / `scripts/build_portfolio_stress_tests.py` / `scripts/build_execution_feedback.py` 已作为准实盘准备层，用于把目标权重转换成订单计划、合并公告 / 舆情 / 人工黑名单风险门禁、检查账户级回撤止损与降仓、估算订单容量与冲击成本、检查组合层统一风险限额、做组合压力测试、汇总风险总控日报、检查可执行性、用虚拟账户或模拟券商验证成交协议、保存纸面账户状态、生成带因子健康、增强因子健康总览、风格暴露、回撤控制、容量冲击、风险限额、压力测试和总控结论的日报和人工确认单、回填真实成交并分析执行偏差、检查异常、保护交易日运行和重复写入，并提供可交给系统调度器的单次运行入口；日终纸面交易已可通过 `--execution-mode simulated_broker` 走统一券商接口，`RealBrokerReadOnlyAdapter` 已提供真实券商只读骨架，但尚未接入真实交易 API。
 
 ---
 
@@ -9,11 +9,13 @@
 ```mermaid
 flowchart TB
     subgraph data["数据层"]
+        DB["storage/database<br/>SQLite: prices/fina/factors/events/news/universe"]
         CSV["data/prices_demo.csv（可选）"]
         POOL["live/stock_pool<br/>Excel / CSV 股票池"]
         CACHE["data/prices_tushare_cache.csv<br/>Tushare 本地缓存"]
         EVENTS["data/announcement_events.csv<br/>公告事件表（可选）"]
         TS["live/data_feed<br/>Tushare / 合成兜底"]
+        DB -. 后续导出缓存 .-> CACHE
         CSV --> LONG["长表 long_df"]
         CACHE --> LONG
         POOL --> TS
@@ -189,6 +191,15 @@ flowchart TB
         RLIMITS --> RLIMITCSV["portfolio_risk_limit_checks_<date>.csv"]
         DD --> STRESS["live/stress_test<br/>组合压力测试 PASS / WATCH / BLOCK / NA"]
         STRESS --> STRESSCSV["daily_stress_tests_<date>.csv"]
+        GUARD --> RCONTROL["live/risk_control_report<br/>风险总控日报 BLOCK / WATCH / NA / PASS"]
+        RGATE --> RCONTROL
+        RBLACK --> RCONTROL
+        DD --> RCONTROL
+        CAPACITY --> RCONTROL
+        CHECKS --> RCONTROL
+        RLIMITS --> RCONTROL
+        STRESS --> RCONTROL
+        RCONTROL --> RCONTROLCSV["daily_risk_control_report_<date>.csv"]
         CHECKS --> CONFIRM["live/manual_confirmation<br/>小资金人工确认单"]
         CONFIRM --> CONFIRMCSV["output/live_orders/<strategy><br/><date>_manual_confirm.csv / .md"]
         CONFIRM --> FEEDBACK["live/execution_feedback<br/>真实成交回填 / 执行偏差"]
@@ -212,6 +223,7 @@ flowchart TB
         CAPACITY --> REPORT
         RLIMITS --> REPORT
         STRESS --> REPORT
+        RCONTROL --> REPORT
         RUNNER --> REPORT["live/paper_report<br/>Markdown 纸面交易日报"]
         REPORT --> REPORTCSV["output/paper_reports/<strategy>/<date>.md"]
         SCHED --> SLOG["output/scheduler_logs/<date>.log"]
@@ -226,6 +238,7 @@ flowchart TB
 
 | 顺序 | 位置 | 做什么 | 意义 |
 |------|------|--------|------|
+| 0 | `storage.database` / `scripts/init_database.py` | 初始化本地 SQLite 表结构：`prices_daily`、`fina_indicator`、`factor_panel_daily`、`announcement_events`、`news_sentiment`、`universe_snapshot` | 把长期基础数据和一次性实验输出分开，先有稳定数据底座，再做每日增量更新 |
 | 1 | `config.get_settings()` | 读路径、区间、`top_k`、费率、`portfolio_weighting`、IC 前瞻天数等 | 集中参数，避免魔法数 |
 | 2 | `live/stock_pool` + `live/data_feed` + `backtest_utils` | 优先本地 demo / Tushare 缓存；否则从 Excel/CSV 股票池读取标的并拉取 Tushare 日线，得到 `long_df`、`prices` 宽表 | 摆脱默认示例股票池，统一真实股票池、行情缓存与回测数据形态 |
 | 3 | `factors/panel_builder` | 计算动量、长动量、短反转、低波、成交量放大、PE、ROE、毛利率、净利率、低资产负债率、营收增长、利润增长、自由现金流收益率代理、经营现金流质量、公告事件得分等基础列 | **Alpha/打分**：谁相对更值得持有（仅使用 ≤当日 信息） |
@@ -263,6 +276,7 @@ flowchart TB
 | 23A-3 | `live.capacity_impact` / `scripts/build_capacity_impact.py` | 读取订单计划和日频成交额历史，按过去 N 条记录计算平均成交额，估算订单参与率、冲击成本 bps、冲击成本金额和容量空间 | 从“订单能不能下”推进到“这笔订单相对市场成交额会不会太重，真实成交会不会明显侵蚀收益” |
 | 23A-4 | `live/risk_limits` / `scripts/build_portfolio_risk_limits.py` | 读取目标权重、当前权重、行业映射、风险门禁和订单预检查结果，按统一限额表输出 `PASS/WATCH/BLOCK/NA` | 把分散的单票、行业、现金、分散度、换手、事件风险和订单风险收口到组合层总控表 |
 | 23A-5 | `live/stress_test` / `scripts/build_portfolio_stress_tests.py` | 读取目标权重、行业映射和压力情景，估算市场下跌、单票下跌、前三大持仓下跌和行业下跌对组合的冲击 | 从“当前有没有超限”推进到“坏情况发生时组合会损失多少” |
+| 23A-6 | `live.risk_control_report` | 汇总运行检查、统一风险门禁、风险黑名单、回撤、容量、订单预检查、风险限额和压力测试，按 `BLOCK > WATCH > NA > PASS` 输出当天总控状态 | 把分散的风控零件收口成一张日报，回答“今天是否允许继续自动或半自动执行” |
 | 23B | `live/order_precheck` | 对订单计划做现金、可卖数量、买入手数、最小订单金额、风险黑名单、停牌 / 涨跌停检查 | 在纸面交易或真实下单前拦截明显不可执行订单 |
 | 24 | `live/broker` + `live/broker_factory` | 定义 `BrokerAdapter`、`SimulatedBroker`、`RealBrokerReadOnlyAdapter`，并按 `broker_mode/broker_provider` 创建对应 Adapter | 给纸面、模拟和未来真实券商一个共同接口；真实券商先用只读 adapter 验证查询能力，具体通道统一注册到 Factory |
 | 25 | `live/paper_trading` | 只执行通过预检查的订单，按手续费更新虚拟现金和持仓，并记录成交 / 跳过原因 | 在不真实下单的前提下，验证订单执行后账户会如何变化 |
@@ -289,6 +303,7 @@ flowchart TB
 ## 3. 关键概念对照
 
 - **再平衡（`rebalance_freq`，默认 `ME`）**：仅在 **每个自然月末的最后一个交易日**（与行情索引交集）触发；当日读取因子截面、执行选股与调仓逻辑，非再平衡日只估值、不调仓。  
+- **数据存储工程化（`storage.database`）**：SQLite 默认路径为 `data/quant_strategy.db`，用于长期保存行情、财务、因子、公告、新闻和股票池快照等基础数据；`output/` 继续保存单次运行的缓存、回测、日报和图片。第一版只建表，不改变现有 CSV 缓存流程。
 - **Top-K 选股**：在再平衡日，对因子值 **降序** 排列，在有效价、有效因子条件下取前 `k` 只；**每期名单可变**，记录在 `meta["rebalance_log"]`。  
 - **可交易性 / 流动性过滤**：若 `Settings.min_avg_volume` 或 `Settings.min_avg_amount` 为正，回测会在 Top-K 前按过去 `Settings.liquidity_lookback_days` 的平均成交量 / 成交额过滤候选股票。过滤前后候选数会写入 `rebalance_log`，方便判断当期策略是否因为流动性不足而无法选满。
 - **停牌 / 涨跌停约束**：若 `Settings.enable_trade_status_filter=True`，回测读取 `is_suspended`、`is_limit_up`、`is_limit_down`。停牌不能买卖，涨停不能买入 / 加仓，跌停不能卖出 / 减仓；被阻断的动作会写入 `decision_log.trade_block_reason`。
@@ -309,14 +324,15 @@ flowchart TB
 - **统一风险限额表（`live.risk_limits`）**：把单票最大权重、Top3 集中度、effective_n、最低持仓数、现金缓冲、行业权重、单次换手、风险门禁命中和订单阻断等指标统一成 `PASS/WATCH/BLOCK/NA`。`WATCH` 表示需要人工复核或降仓观察，`BLOCK` 表示不应直接进入自动执行，`NA` 表示缺少必要输入，不能假装通过。
 - **组合压力测试（`live.stress_test`）**：对目标组合施加市场下跌、第一大持仓下跌、前三大持仓下跌和第一大行业下跌等情景，估算组合损失率与损失金额，并输出 `PASS/WATCH/BLOCK/NA`。压力测试不预测明天收益，只回答“坏情况发生时账户大约会受多大冲击”。
 - **容量与冲击成本（`live.capacity_impact`）**：用订单预估金额除以过去 N 日平均成交额，得到参与率；再用简化平方根模型估算冲击成本 bps 和金额。默认单笔参与率高于 5% 进入 `WATCH`，高于 10% 进入 `BLOCK`；缺少成交额历史则输出 `NA`，不能假装通过。
+- **风险总控日报（`live.risk_control_report`）**：把运行检查、统一风险门禁、风险黑名单、回撤止损与降仓、容量与冲击成本、订单预检查、组合风险限额和组合压力测试合并成一张表。总状态优先级为 `BLOCK > WATCH > NA > PASS`；`NA` 表示缺少必要输入，不能当作安全通过。
 - **新闻 / 舆情日频因子（`factors.factor_news`）**：从统一 `news_sentiment` 表生成 `NEWS_SENTIMENT_DECAY`、`NEWS_NEGATIVE_RISK_SCORE`、`NEWS_NEGATIVE_COUNT_7D`、`NEWS_HEAT_7D`。这些因子当前是 MVP 候选，优先服务风险观察、热度观察和后续回测验证，不默认替代主策略因子。
 - **统一券商接口（`live.broker` + `live.broker_factory`）**：`live.broker` 定义 `BrokerAdapter` 协议和 `BrokerAccount` / `BrokerPosition` / `BrokerOrder` 数据结构，让上层只关心查资金、查持仓、查订单、下单和撤单。`SimulatedBroker` 用同一协议做立即成交模拟；`RealBrokerReadOnlyAdapter` 固定只读，可查询账户、持仓和订单快照，但会阻断下单和撤单；`live.broker_factory.create_broker_adapter` 根据 `broker_mode/broker_provider` 创建模拟或只读 Adapter，并为未来 QMT、PTrade、掘金 Adapter 提供统一注册入口。
 - **纸面 / 真实账户只读对账（`live.broker_reconcile`）**：读取纸面账户状态，再通过只读 `BrokerAdapter` 读取真实账户快照，比较现金、总资产、持仓股数和可用股数差异。该层只输出 CSV / Markdown 对账报告，不下单、不撤单。
 - **纸面交易（`live.paper_trading`）**：读取订单计划和预检查结果，只对 `PASS` 订单做虚拟成交，按手续费更新现金和持仓；被预检查阻断或成交层现金 / 持仓不足的订单会记录为 `SKIPPED`。该层不连接券商。
 - **纸面账户状态（`live.account_state`）**：纸面交易后，将现金写入 `account.csv`，持仓写入 `positions.csv`，每日快照追加到 `snapshots.csv`。下一次运行可先读取该状态，再继续生成订单、预检查和纸面成交。
 - **每日纸面运行器（`live.paper_runner`）**：把账户读取、订单计划、订单预检查、执行模式选择、持仓更新、账户快照和落盘串成一个函数 `run_daily_paper_trade`。默认 `execution_mode="paper_trading"` 沿用旧纸面成交；切到 `execution_mode="simulated_broker"` 时，订单会先进入 `SimulatedBroker`，再转换为兼容的 `paper_trades`，让日报和账户状态继续复用。
-- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--risk-gate`、`--risk-blacklist`、`--risk-limits`、`--stress-scenarios`、`--capacity-rules`、`--liquidity-history`、`--industry`、`--factor-decay-monitor`、`--style-exposure`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。脚本会默认计算容量与冲击成本、组合风险限额检查和压力测试，并分别保存到 `output/capacity_impact/<strategy>/daily_capacity_impact_*.csv`、`output/portfolio_risk_limits/<strategy>/daily_risk_limit_checks_<date>.csv`、`output/stress_tests/<strategy>/daily_stress_tests_<date>.csv`。
-- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、因子健康与失效监控、增强因子健康总览、组合风格暴露、统一风险门禁、风险黑名单、回撤止损与降仓、容量与冲击成本、组合风险限额、组合压力测试、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
+- **日终纸面交易脚本（`scripts/run_daily_paper.py`）**：默认读取 `output/rebalance_logs/FUSED_ROLLING_SCORE_WEIGHTED.csv` 与 `output/cache/prices_wide_close.csv`，再调用 `run_daily_paper_trade`。可通过 `--strategy`、`--trade-date`、`--trade-status`、`--risk-gate`、`--risk-blacklist`、`--risk-limits`、`--stress-scenarios`、`--capacity-rules`、`--liquidity-history`、`--industry`、`--factor-decay-monitor`、`--style-exposure`、`--execution-mode simulated_broker`、`--no-persist`、`--no-report`、`--no-guard`、`--max-price-age-days`、`--allow-non-trading-day` 和 `--allow-rerun` 调整运行口径。脚本会默认计算容量与冲击成本、组合风险限额检查、压力测试和风险总控日报，并分别保存到 `output/capacity_impact/<strategy>/daily_capacity_impact_*.csv`、`output/portfolio_risk_limits/<strategy>/daily_risk_limit_checks_<date>.csv`、`output/stress_tests/<strategy>/daily_stress_tests_<date>.csv`、`output/risk_control_reports/<strategy>/daily_risk_control_report_<date>.csv`。
+- **纸面交易日报（`live.paper_report`）**：默认随日终脚本生成 Markdown，路径为 `output/paper_reports/<strategy>/<date>.md`，内容包括运行摘要、执行模式、账户快照、较上一快照变化、因子健康与失效监控、增强因子健康总览、组合风格暴露、风险总控日报、统一风险门禁、风险黑名单、回撤止损与降仓、容量与冲击成本、组合风险限额、组合压力测试、今日订单、被阻断订单、纸面成交、券商订单回报、当前持仓和输出文件。
 - **增强因子健康日报（`live.factor_health_report`）**：默认读取 `output/factor_validation/factor_decay_monitor.csv`、`rolling_out_of_sample_summary.csv`、`output/factor_diagnostics/factor_selection_summary.csv`、`factor_redundancy_report.csv`、`factor_weight_stability_summary.csv`、`factor_weight_drift_events.csv` 和 `output/market_regime/strategy_regime_summary.csv`，压缩成因子入选、样本外失效、滚动样本外、权重漂移、因子冗余、牛熊市分段六类状态。它只做展示和提示，不改变订单。
 - **风格暴露日报接入（`live.style_exposure_monitor`）**：默认读取 `output/factor_diagnostics/style_exposure.csv`，根据当前策略和运行日取最近一期目标组合风格暴露，并写入命令摘要和 Markdown 日报。它只做监控展示，不改变选股、配权或订单。
 - **小资金人工确认实盘单（`live.manual_confirmation`）**：默认随日终脚本生成 CSV 和 Markdown，路径为 `output/live_orders/<strategy>/<date>_manual_confirm.csv/.md`。确认单包含订单建议、预检查结果、可选因子健康状态和人工回填字段；它只辅助人工下单，不触发真实交易。

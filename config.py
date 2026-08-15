@@ -23,6 +23,7 @@ class Settings:
     output_dir: Path
     stock_pool_path: Path
     stock_pool_code_col: str = "股票代码"
+    database_path: Path | None = None
     tushare_price_cache_path: Path | None = None
     fina_indicator_cache_path: Path | None = None
     announcement_event_path: Path | None = None
@@ -127,6 +128,8 @@ def get_settings() -> Settings:
     output_dir = Path(output_env).expanduser() if output_env else root / "output"
     stock_pool_env = os.environ.get("QUANT_STOCK_POOL_PATH", "").strip()
     stock_pool_path = Path(stock_pool_env).expanduser() if stock_pool_env else data_dir / "stock_pool.xlsx"
+    database_env = os.environ.get("QUANT_DATABASE_PATH", "").strip()
+    database_path = Path(database_env).expanduser() if database_env else data_dir / "quant_strategy.db"
     cache_env = os.environ.get("QUANT_TUSHARE_PRICE_CACHE", "").strip()
     tushare_cache = Path(cache_env).expanduser() if cache_env else data_dir / "prices_tushare_cache.csv"
     fina_cache_env = os.environ.get("QUANT_TUSHARE_FINA_CACHE", "").strip()
@@ -155,6 +158,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         output_dir=output_dir,
         stock_pool_path=stock_pool_path,
+        database_path=database_path,
         tushare_price_cache_path=tushare_cache,
         fina_indicator_cache_path=fina_cache,
         announcement_event_path=announcement_event_path,

@@ -306,14 +306,19 @@ class TestDailyPaperCli(unittest.TestCase):
             report_path = settings.output_dir / "paper_reports" / "TEST" / "2024-01-31.md"
             report = report_path.read_text(encoding="utf-8")
             risk_path = settings.output_dir / "portfolio_risk_limits" / "TEST" / "daily_risk_limit_checks_20240131.csv"
+            control_path = settings.output_dir / "risk_control_reports" / "TEST" / "daily_risk_control_report_20240131.csv"
 
             self.assertIn("risk_limits=BLOCK", summary)
             self.assertIn("stress_tests=BLOCK", summary)
+            self.assertIn("risk_control_report=BLOCK", summary)
+            self.assertIn("## 风险总控日报", report)
             self.assertIn("max_single_position_weight", report)
             self.assertIn("## 组合压力测试", report)
             self.assertTrue(risk_path.is_file())
+            self.assertTrue(control_path.is_file())
             self.assertTrue((settings.output_dir / "stress_tests" / "TEST" / "daily_stress_tests_20240131.csv").is_file())
             self.assertEqual(str(result["risk_limit_checks"].set_index("limit_id").loc["max_single_position_weight", "status"]), "BLOCK")
+            self.assertEqual(str(result["risk_control_report"].iloc[0]["status"]), "BLOCK")
 
     def test_run_from_outputs_adds_capacity_impact_to_report_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as td:

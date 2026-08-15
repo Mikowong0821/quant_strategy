@@ -64,6 +64,10 @@ from live.risk_limits import (
     load_risk_limits,
     summarize_risk_limit_checks,
 )
+from live.risk_control_report import (
+    build_risk_control_report,
+    summarize_risk_control_report,
+)
 from live.stress_test import (
     load_stress_scenarios,
     run_portfolio_stress_tests,
@@ -290,6 +294,22 @@ def _save_capacity_impact(
     return {"detail": detail_path, "summary": summary_path}
 
 
+def _save_risk_control_report(
+    settings: Settings,
+    *,
+    strategy: str,
+    trade_date: Any,
+    report: pd.DataFrame,
+) -> Path:
+    safe_strategy = str(strategy).replace("/", "_")
+    base = settings.output_dir / "risk_control_reports" / safe_strategy
+    base.mkdir(parents=True, exist_ok=True)
+    tag = pd.Timestamp(trade_date).strftime("%Y%m%d")
+    path = base / ("daily_risk_control_report_%s.csv" % tag)
+    report.to_csv(path, index=False)
+    return path
+
+
 def run_daily_paper_from_outputs(
     settings: Settings,
     *,
@@ -466,6 +486,17 @@ def run_daily_paper_from_outputs(
         total_asset=float(snapshot.get("total_asset", 0.0)),
         industry=industry,
     )
+    result["risk_control_report"] = build_risk_control_report(
+        trade_date=run_date,
+        guard_issues=result.get("guard_issues"),
+        risk_gate=result.get("risk_gate"),
+        risk_blacklist=result.get("risk_blacklist"),
+        drawdown_control=result.get("drawdown_control"),
+        capacity_impact_summary=result.get("capacity_impact_summary"),
+        order_checks=result.get("order_checks"),
+        risk_limit_checks=result.get("risk_limit_checks"),
+        stress_tests=result.get("stress_tests"),
+    )
     if persist_outputs:
         result.setdefault("paths", {})["drawdown_control"] = _save_drawdown_control(
             settings,
@@ -491,6 +522,12 @@ def run_daily_paper_from_outputs(
             strategy=strategy,
             trade_date=run_date,
             stress_tests=result["stress_tests"],
+        )
+        result.setdefault("paths", {})["risk_control_report"] = _save_risk_control_report(
+            settings,
+            strategy=strategy,
+            trade_date=run_date,
+            report=result["risk_control_report"],
         )
     if persist_outputs and generate_report:
         report_path = save_daily_paper_report(settings, result)
@@ -522,6 +559,7 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     stress_tests = result.get("stress_tests")
     drawdown_control = result.get("drawdown_control")
     capacity_impact_summary = result.get("capacity_impact_summary")
+    risk_control_report = result.get("risk_control_report")
 
     n_orders = int(len(orders))
     n_pass = int((checks["check_status"] == "PASS").sum()) if not checks.empty else 0
@@ -584,6 +622,8 @@ def format_daily_paper_summary(result: dict[str, Any]) -> str:
     lines.append("drawdown_control=%s detail=%s" % (drawdown_status, drawdown_reason))
     capacity_status, capacity_reason = summarize_capacity_impact(capacity_impact_summary)
     lines.append("capacity_impact=%s detail=%s" % (capacity_status, capacity_reason))
+    risk_control_status, risk_control_reason = summarize_risk_control_report(risk_control_report)
+    lines.append("risk_control_report=%s detail=%s" % (risk_control_status, risk_control_reason))
     if guard_issues:
         lines.append("guard:")
         lines.append(format_guard_issues(guard_issues))

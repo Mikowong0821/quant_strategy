@@ -17,7 +17,36 @@
 
 ## 2. 磁盘数据（`data/`）
 
-### 2.0 股票池：`data/stock_pool.xlsx` 或环境变量 `QUANT_STOCK_POOL_PATH`
+### 2.0 SQLite 数据库：`data/quant_strategy.db` 或环境变量 `QUANT_DATABASE_PATH`
+
+第一版数据库层只定义长期复用的基础数据表，不替代 `output/` 下的单次运行结果。默认路径为 `data/quant_strategy.db`，可通过 `QUANT_DATABASE_PATH` 覆盖。数据库文件属于本地数据资产，不提交到 GitHub。
+
+初始化入口：
+
+```bash
+python scripts/init_database.py
+```
+
+核心表契约：
+
+| 表名 | 主键 | 用途 |
+|------|------|------|
+| `prices_daily` | `(trade_date, ts_code)` | 日线行情；当前包含 `open/high/low/close/volume/amount/source/updated_at` |
+| `fina_indicator` | `(ts_code, ann_date, end_date)` | 财务指标；财务因子按 `ann_date` 对齐，避免未来函数 |
+| `factor_panel_daily` | `(trade_date, ts_code, factor_name, factor_version)` | 日频因子长表；新增因子只增加行，不频繁改宽表字段 |
+| `announcement_events` | `event_key` | 公告事件；用于公告事件因子、公告类型分层和公告风险过滤 |
+| `news_sentiment` | `item_key` | 新闻舆情；用于新闻日频因子与负面舆情风险过滤 |
+| `universe_snapshot` | `(snapshot_date, universe_name, ts_code)` | 股票池快照；记录候选池、启用状态、行业主题与剔除原因 |
+| `storage_metadata` | `key` | 数据库元信息；当前记录 `schema_version` |
+
+数据库与 CSV / 输出目录的边界：
+
+| 数据类型 | 推荐位置 | 说明 |
+|----------|----------|------|
+| 行情、财务、日频因子、公告、新闻、股票池快照 | SQLite | 长期复用、可增量更新、需要主键约束 |
+| 净值图、绩效汇总、调仓日志、纸面交易日报、风险日报 | `output/` | 单次运行结果，作为实验档案保留 |
+
+### 2.1 股票池：`data/stock_pool.xlsx` 或环境变量 `QUANT_STOCK_POOL_PATH`
 
 **最低必需列**：
 
@@ -27,7 +56,7 @@
 
 股票池文件支持 `.xlsx` / `.xls` / `.csv`。本地真实股票池通常不进入 Git；默认 `.gitignore` 会忽略 `data/*.xlsx`、`data/*.xls` 与 `data/*.csv`。
 
-### 2.1 行情：`data/stock_<ts_code中的数字部分>.csv` 或聚合多标的 `prices.csv`（二选一需在 `config` 中声明）
+### 2.2 行情：`data/stock_<ts_code中的数字部分>.csv` 或聚合多标的 `prices.csv`（二选一需在 `config` 中声明）
 
 **最低必需列**：
 
@@ -43,7 +72,7 @@
 
 可选：`amount`（成交额）、`pct_chg` 等；**缺列时由加载层报错或按 config 填充策略处理**。
 
-### 2.2 财务：`data/finance_data.csv`
+### 2.3 财务：`data/finance_data.csv`
 
 **最低必需列**（用于 PE、ROE、质量、成长与现金流因子；具体财报发布日对齐在因子层实现，契约只要求列存在）：
 
@@ -181,6 +210,7 @@
 |------|------|
 | `project_root` / `data_dir` / `output_dir` | 路径；缓存默认 `output_dir/cache/` |
 | `stock_pool_path` / `stock_pool_code_col` | 股票池文件路径与代码列名；默认 `data/stock_pool.xlsx` 和 `股票代码`，可用 `QUANT_STOCK_POOL_PATH` 改路径 |
+| `database_path` | SQLite 数据库路径；默认 `data/quant_strategy.db`，可用 `QUANT_DATABASE_PATH` 覆盖 |
 | `tushare_price_cache_path` | Tushare 日线行情本地缓存路径；默认 `data/prices_tushare_cache.csv`，可用 `QUANT_TUSHARE_PRICE_CACHE` 改路径 |
 | `backtest_start` / `backtest_end` | 回测区间（字符串 ISO 日期） |
 | `rebalance_freq` | 再平衡频率，默认 `ME`（月末） |

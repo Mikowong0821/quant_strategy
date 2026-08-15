@@ -14,6 +14,7 @@ from live.drawdown_control import summarize_drawdown_control
 from live.factor_health_report import summarize_factor_health_report
 from live.manual_confirmation import FACTOR_HEALTH_SEVERITY, summarize_factor_health
 from live.risk_blacklist import summarize_risk_blacklist_for_report
+from live.risk_control_report import summarize_risk_control_report
 from live.risk_gate import summarize_risk_gate_for_report
 from live.risk_limits import summarize_risk_limit_checks
 from live.stress_test import summarize_stress_tests
@@ -245,6 +246,38 @@ def _enhanced_factor_health_section(health_report: pd.DataFrame | None) -> list[
                 display,
                 ["category", "status", "summary", "detail", "action"],
                 ["类别", "状态", "摘要", "明细", "处理动作"],
+                max_rows=20,
+            ),
+        ]
+    )
+    return lines
+
+
+def _risk_control_report_section(risk_control_report: pd.DataFrame | None) -> list[str]:
+    status, detail = summarize_risk_control_report(risk_control_report)
+    lines = [
+        "## 风险总控日报",
+        "",
+        "- 总控状态：`%s`" % status,
+        "- 摘要：%s" % detail,
+    ]
+    if risk_control_report is None or risk_control_report.empty:
+        lines.extend(
+            [
+                "- 明细：未找到风险总控日报；日终脚本会默认根据运行检查、风险门禁、黑名单、回撤、容量、订单预检查、风险限额和压力测试生成。",
+                "",
+            ]
+        )
+        return lines
+
+    display = risk_control_report.copy()
+    lines.extend(
+        [
+            "",
+            _markdown_table(
+                display,
+                ["module", "status", "summary", "action"],
+                ["模块", "状态", "摘要", "处理动作"],
                 max_rows=20,
             ),
         ]
@@ -606,6 +639,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     drawdown_control = result.get("drawdown_control")
     capacity_impact = result.get("capacity_impact")
     capacity_impact_summary = result.get("capacity_impact_summary")
+    risk_control_report = result.get("risk_control_report")
 
     lines: list[str] = [
         "# 纸面交易日报 - %s - %s" % (strategy, trade_date),
@@ -660,6 +694,7 @@ def build_daily_paper_report(result: dict[str, Any]) -> str:
     lines.extend(_factor_health_section(factor_monitor))
     lines.extend(_style_exposure_section(style_exposure))
     lines.extend(_enhanced_factor_health_section(factor_health_report))
+    lines.extend(_risk_control_report_section(risk_control_report))
     lines.extend(_risk_gate_section(risk_gate))
     lines.extend(_risk_blacklist_section(risk_blacklist))
     lines.extend(_drawdown_control_section(drawdown_control))
